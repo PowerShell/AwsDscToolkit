@@ -598,19 +598,19 @@ Describe 'Test-EC2InstanceRegistration (CannotRegister, NotReadyToRegister, Read
     }
 }
 
-Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
+Describe 'Set-IAMInstanceProfileForRegistration and Test-IAMInstanceProfileForRegistration' {
     $instanceProfileName = 'TestInstanceProfile'
 
     It 'Should create a new valid IAM Instance Profile (New Instance)' {
         try {
-            $instanceProfile = Set-IAMInstanceProfile `
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -AwsAccessKey $AwsAccessKey `
                 -AwsSecretKey $AwsSecretKey `
                 -AwsRegion $AwsRegion `
                 -Verbose
 
-            $testResult = Test-IAMInstanceProfile `
+            $testResult = Test-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -AwsAccessKey $AwsAccessKey `
                 -AwsSecretKey $AwsSecretKey `
@@ -626,7 +626,7 @@ Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
 
     It 'Should create a new valid IAM Instance Profile (Existing Instance)' {
         try {
-            $instanceProfile = Set-IAMInstanceProfile `
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -ExistingInstance `
                 -AwsAccessKey $AwsAccessKey `
@@ -634,7 +634,7 @@ Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
                 -AwsRegion $AwsRegion `
                 -Verbose
 
-            $testResult = Test-IAMInstanceProfile `
+            $testResult = Test-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -ExistingInstance `
                 -AwsAccessKey $AwsAccessKey `
@@ -655,14 +655,14 @@ Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
 
             Start-Sleep -Seconds 10
 
-            $instanceProfile = Set-IAMInstanceProfile `
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -AwsAccessKey $AwsAccessKey `
                 -AwsSecretKey $AwsSecretKey `
                 -AwsRegion $AwsRegion `
                 -Verbose
 
-            $testResult = Test-IAMInstanceProfile `
+            $testResult = Test-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -AwsAccessKey $AwsAccessKey `
                 -AwsSecretKey $AwsSecretKey `
@@ -682,7 +682,7 @@ Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
 
             Start-Sleep -Seconds 10
             
-            $instanceProfile = Set-IAMInstanceProfile `
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -ExistingInstance `
                 -AwsAccessKey $AwsAccessKey `
@@ -690,7 +690,7 @@ Describe 'Set-IAMInstanceProfile and Test-IAMInstanceProfile' {
                 -AwsRegion $AwsRegion `
                 -Verbose
 
-            $testResult = Test-IAMInstanceProfile `
+            $testResult = Test-IAMInstanceProfileForRegistration `
                 -Name $instanceProfileName `
                 -ExistingInstance `
                 -AwsAccessKey $AwsAccessKey `

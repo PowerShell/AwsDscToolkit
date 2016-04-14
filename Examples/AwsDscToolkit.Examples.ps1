@@ -22,13 +22,13 @@ $securityGroupName = 'SecurityGroup'
 $securityGroup = New-EC2SecurityGroup -GroupName $securityGroupName -Description 'Security group for registration to Azure Automation'
 
 # Create a valid IAM instance profile for a new instance 
-$instanceProfile = Set-IAMInstanceProfile -Name $instanceProfileName
+$instanceProfile = Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
 # OR
 # Test that an existing IAM instance profile is valid to register a new instance
-Test-IAMInstanceProfile -Name $instanceProfileName
+Test-IAMInstanceProfileForRegistration -Name $instanceProfileName
 # AND
 # Modify an existing IAM instance profile to be valid to register a new instance
-Set-IAMInstanceProfile -Name $instanceProfileName
+Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
 
 # Get the image id of the Amazon Machine Image (AMI) to use - By default the cmdlet will create a VM with the most recent version of 'WINDOWS_2012R2_BASE'
 $imageName = 'WINDOWS_2012R2_BASE'
@@ -58,10 +58,10 @@ $instanceId = 'i-9c3d7344'
 Test-EC2InstanceRegistration -InstanceId $instanceId -Verbose
 
 # Test that an existing IAM instance profile is valid to register an existing instance
-Test-IAMInstanceProfile -Name $existingInstanceName -ExistingInstance
+Test-IAMInstanceProfileForRegistration -Name $existingInstanceName -ExistingInstance
 # AND
 # Modify an existing IAM instance profile to be valid to register an existing instance
-Set-IAMInstanceProfile -Name $existingInstanceName -ExistingInstance
+Set-IAMInstanceProfileForRegistration -Name $existingInstanceName -ExistingInstance
 
 
 # Register an existing instance
