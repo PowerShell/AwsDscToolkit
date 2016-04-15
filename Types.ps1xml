@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Types>
+    <Type>
+        <Name>Amazon.EC2.Model.Reservation</Name>
+        <Members>
+            <ScriptProperty>
+                <Name>InstanceId</Name>
+                <GetScriptBlock>$this.Instances[0].InstanceId</GetScriptBlock>
+            </ScriptProperty>
+        </Members>
+    </Type>
+</Types>

@@ -44,6 +44,19 @@ function ConvertFrom-StringToMemoryStream {
     return $memoryStream
 }
 
+# This is a wrapper method for the AWSPowershell Get-KMSKeys cmdlet for tests
+function Get-AwsEncryptionKeys {
+    param (
+        [string]
+        $AccessKey,
+        [string]
+        $SecretKey,
+        [string]
+        $Region
+    )
+    return AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+}
+
 # Converts a hashtable of protected settings to an encryted base 64 string using the AWS Key Management Service
 function ConvertTo-EncryptedProtectedSettingsString {
     [OutputType([string])]
@@ -68,7 +81,14 @@ function ConvertTo-EncryptedProtectedSettingsString {
         $protectedSettingsMemoryStream = ConvertFrom-StringToMemoryStream $protectedSettingsJson -Verbose
 
         #Get a key id
-        $keyId = $(AWSPowershell\Get-KMSKeys -Limit 1 -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose).KeyId
+        $keys = @()
+        $keys += Get-AwsEncryptionKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+
+        if (-not $keys -or $keys.Count -eq 0) {
+            throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key via the AWS console."
+        }
+
+        $keyId = $keys[0].KeyId
 
         #Encrypt memory stream
         $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $keyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
@@ -215,10 +235,10 @@ function Test-AzureRmCredential {
 
     # Check for Azure login
     try {
-        AzureRM\Get-AzureRmContext | Out-Null
+        AzureRM.Profile\Get-AzureRmContext | Out-Null
     }
     catch {
-        AzureRM\Add-AzureRmAccount | Out-Null
+        AzureRM.Profile\Add-AzureRmAccount | Out-Null
     }
 }
 
@@ -328,7 +348,7 @@ $xml.Save($EC2SettingsFile)
     #Wait until the instance is running
     Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'running' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
 
-    Write-Output "$(Get-Date) Azure Automation onboarding is running remotely. You should see your AWS VM in Azure Automation as a DSC Node soon."
+    Write-Verbose "$(Get-Date) Azure Automation onboarding is running remotely. You should see your AWS VM in Azure Automation as a DSC Node soon."
 }
 
 # Retrieves the Azure Automation resource group for an Azure Automation account
@@ -338,7 +358,7 @@ function Get-AzureAutomationResourceGroup {
         $AzureAutomationAccountName
     )
     
-    $accounts = AzureRM\Get-AzureRmAutomationAccount
+    $accounts = AzureRM.Automation\Get-AzureRmAutomationAccount
 
     $matchingAccounts = @()
     foreach ($account in $accounts) {
@@ -395,7 +415,7 @@ function Set-IAMInstanceProfileKeyAccess {
 
     if (-not $KeyId) {
         $keys = @()
-        $keys += AWSPowershell\Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        $keys += Get-AwsEncryptionKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
         if (-not $keys -or $keys.Count -eq 0) {
             throw "This AWS account does not have any AWS encryption keys."
         }
@@ -500,15 +520,15 @@ function Set-IAMInstanceProfileForRegistration {
     # If the instance exists, test if it already has access
     if ($instanceProfile) {
         if ($ExistingInstance) {
-            $alreadySet = Test-IAMInstanceProfileForRegistration -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+            $alreadySet = Test-IAMInstanceProfileForRegistration -Name $Name -ExistingInstance -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
         }
         else {
-            $alreadySet = Test-IAMInstanceProfileForRegistration -Name $Name -NoRunCommandNeeded -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+            $alreadySet = Test-IAMInstanceProfileForRegistration -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
         }
 
         if ($alreadySet) {
             Write-Verbose "$(Get-Date) This instance profile is already set for registration."
-            return
+            return $instanceProfile
         }
         else {
             Write-Verbose "$(Get-Date) This instance profile is not set for registration. Modifying now..."
@@ -804,6 +824,7 @@ function Set-IAMInstanceProfileForRegistration {
     Test-EC2InstanceRegistration
 #>
 function Register-EC2Instance {
+    [OutputType([Amazon.EC2.Model.Reservation])]
     [CmdletBinding(ConfirmImpact = 'Medium')]
     param(
         #--- Required parameters ---
@@ -1020,11 +1041,11 @@ function Register-EC2Instance {
             $AzureAutomationResourceGroup = Get-AzureAutomationResourceGroup -AzureAutomationAccountName $AzureAutomationAccount
         }
 
-        $automationAccount = AzureRM\Get-AzureRmAutomationAccount -ResourceGroupName $AzureAutomationResourceGroup -Name $AzureAutomationAccount
+        $automationAccount = AzureRM.Automation\Get-AzureRmAutomationAccount -ResourceGroupName $AzureAutomationResourceGroup -Name $AzureAutomationAccount
 
         # Gather registration info from Azure Automation account
         Write-Verbose "$(Get-Date) Gathering Azure Automation registration info..."
-        $registrationInfo = $automationAccount | AzureRM\Get-AzureRmAutomationRegistrationInfo
+        $registrationInfo = $automationAccount | AzureRM.Automation\Get-AzureRmAutomationRegistrationInfo
 
         # Set up Azure Automation configuration info
         Write-Verbose "$(Get-Date) Setting up Azure Automation registration configuration..."
@@ -1130,16 +1151,25 @@ function Register-EC2Instance {
             $steppablePipeline.Process($_)
         }
         else {
-            # Run the command to register an existing instance
-            Invoke-UserDataOnEC2Instance `
-                -InstanceId $InstanceId `
-                -UserData $userData `
-                -ExtensionVersion $DscBootstrapperVersion `
-                -WmfVersion $WmfVersion `
-                -AccessKey $AwsAccessKey `
-                -SecretKey $AwsSecretKey `
-                -Region $AwsRegion `
-                -Verbose
+            $instance = Get-EC2Instance -Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+            if ($instance) {
+                # Run the command to register an existing instance
+                Invoke-UserDataOnEC2Instance `
+                    -InstanceId $InstanceId `
+                    -UserData $userData `
+                    -ExtensionVersion $DscBootstrapperVersion `
+                    -WmfVersion $WmfVersion `
+                    -AccessKey $AwsAccessKey `
+                    -SecretKey $AwsSecretKey `
+                    -Region $AwsRegion `
+                    -Verbose
+            }
+            else {
+                throw "There is no EC2 instance with the id $InstanceId."
+            }
+
+            return $instance
         }
     }
 
@@ -1266,7 +1296,7 @@ function Test-IAMInstanceProfileEncryptionKeyAccess {
     $keyAccessFound = $false
 
     Write-Verbose "$(Get-Date) Retrieving encryption keys..."
-    $keys = AWSPowershell\Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+    $keys = Get-AwsEncryptionKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
     Write-Verbose "$(Get-Date) Found encryption keys. Checking for key policy access permssions..."
     foreach ($key in $keys) {
@@ -1340,7 +1370,7 @@ function Test-IAMInstanceProfileForRegistration {
         
     $encryptionKeyAccess = Test-IAMInstanceProfileEncryptionKeyAccess -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
 
-    return ($encryptionKeyAccess -and ($NoRunCommandNeeded -or $runCommandPermission))
+    return ($encryptionKeyAccess -and (-not $ExistingInstance -or $runCommandPermission))
 }
 
 # Tests if an EC2 instance is registered with Azure Automation
@@ -1378,7 +1408,7 @@ function Test-EC2InstanceRegistered {
     $vmIpAddress = $instanceReservation.Instances[0].PrivateIpAddress
 
     Write-Verbose "$(Get-Date) Retrieving Azure Automation DSC nodes..."
-    $dscNodes = AzureRM\Get-AzureRmAutomationDscNode -ResourceGroupName $AzureAutomationResourceGroup -AutomationAccountName $AzureAutomationAccount
+    $dscNodes = AzureRM.Automation\Get-AzureRmAutomationDscNode -ResourceGroupName $AzureAutomationResourceGroup -AutomationAccountName $AzureAutomationAccount
     
     Write-Verbose "$(Get-Date) Checking instance IP address against DSC nodes..."
     foreach ($dscNode in $dscNodes) {
