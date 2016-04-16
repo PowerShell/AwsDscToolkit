@@ -188,7 +188,6 @@ function Get-AwsDscUserData {
 		[Parameter(ParameterSetName='ConfigurationSpecified')]
 		[Hashtable]$ProtectedConfigurationArguments,
 		[string]$ExtensionVersion = '0.0.0.1',
-        [string]$S3Bucket = 'mspsdsc.cloudwatchdata',
         [string]$WmfVersion = 'latest',
         [Parameter(Mandatory = $true)]
         [string]$AccessKey,
@@ -200,7 +199,7 @@ function Get-AwsDscUserData {
     Write-Verbose "$(Get-Date) Generating user data..."
 
     #AWS Bootstrapper download info
-	$extensionDownloadUrl = 'https://s3-us-west-2.amazonaws.com/' + $S3Bucket + '/AWSDSCBootstrapper.ps1'
+	$extensionDownloadUrl = 'https://raw.githubusercontent.com/PowerShell/AWSBootStrapper/master/AWSDSCBootstrapper.ps1'
 	$extensionFileLocation = 'C:\AWSDSCBootstrapper.ps1'
 
     #Convert public arguments to a string so that the AWS agent will process the command correctly
