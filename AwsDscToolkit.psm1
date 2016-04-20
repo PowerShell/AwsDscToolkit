@@ -187,7 +187,7 @@ function Get-AwsDscUserData {
 		[Hashtable]$ConfigurationArguments,
 		[Parameter(ParameterSetName='ConfigurationSpecified')]
 		[Hashtable]$ProtectedConfigurationArguments,
-		[string]$ExtensionVersion = '0.0.0.1',
+		[string]$ExtensionVersion = '0.1.0.0',
         [string]$WmfVersion = 'latest',
         [Parameter(Mandatory = $true)]
         [string]$AccessKey,
@@ -275,9 +275,7 @@ function Invoke-UserDataOnEC2Instance {
         [Parameter(Mandatory = $true)]
         [string]$InstanceId,
 		[Parameter(Mandatory = $true)]
-        [string]$userData,
-		[string]$ExtensionVersion = '0.0.0.1',
-        [string]$WmfVersion = 'latest',
+        [string]$UserData,
         [Parameter(Mandatory = $true)]
         [string]$AccessKey,
         [Parameter(Mandatory = $true)]
@@ -310,10 +308,10 @@ $xml.Save($EC2SettingsFile)
 '@
 
     $runPSCommand = AWSPowershell\Send-SSMCommand `
-        -InstanceId @($InstanceId) `
+        -InstanceId $InstanceId `
         -DocumentName 'AWS-RunPowerShellScript' `
         -Comment 'Set persist flag for user data' `
-        -Parameter @{'commands'=@($setPersistFlagCommand)} `
+        -Parameter @{'commands' = @($setPersistFlagCommand)} `
         -AccessKey $AccessKey `
         -SecretKey $SecretKey `
         -Region $Region
@@ -338,7 +336,7 @@ $xml.Save($EC2SettingsFile)
     
     #Set the user data
     Write-Verbose "$(Get-Date) Editting user data..."
-    AWSPowershell\Edit-EC2InstanceAttribute -InstanceId $InstanceId -UserData $userData -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+    AWSPowershell\Edit-EC2InstanceAttribute -InstanceId $InstanceId -UserData $UserData -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
     #Start the instance again
     Write-Verbose "$(Get-Date) Starting instance..."
@@ -543,78 +541,7 @@ function Set-IAMInstanceProfileForRegistration {
         }
     }'
 
-    $rolePolicyDocument = '{
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "ssm:DescribeAssociation",
-                    "ssm:GetDocument",
-                    "ssm:ListAssociations",
-                    "ssm:UpdateAssociationStatus",
-                    "ssm:UpdateInstanceInformation"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "ec2messages:AcknowledgeMessage",
-                    "ec2messages:DeleteMessage",
-                    "ec2messages:FailMessage",
-                    "ec2messages:GetEndpoint",
-                    "ec2messages:GetMessages",
-                    "ec2messages:SendReply"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "cloudwatch:PutMetricData"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "ec2:DescribeInstanceStatus"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "ds:CreateComputer",
-                    "ds:DescribeDirectories"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:DescribeLogGroups",
-                    "logs:DescribeLogStreams",
-                    "logs:PutLogEvents"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "s3:PutObject",
-                    "s3:GetObject",
-                    "s3:AbortMultipartUpload",
-                    "s3:ListMultipartUploadParts",
-                    "s3:ListBucketMultipartUploads"
-                ],
-                "Resource": "*"
-            }
-        ]
-    }'
+    $managedRolePolicyArn = 'arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM'
 
     if (-not $RoleName) {
         $RoleName = $Name
@@ -627,7 +554,7 @@ function Set-IAMInstanceProfileForRegistration {
     }
 
     $role = $null
-    if ($instanceProfile.Roles -or $instanceProfile.Roles.Count -gt 0) {
+    if ($instanceProfile.Roles -and $instanceProfile.Roles.Count -gt 0) {
         try {
             $role = AWSPowershell\Get-IAMRole -RoleName $RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
         }
@@ -648,8 +575,7 @@ function Set-IAMInstanceProfileForRegistration {
     }
 
     if ($ExistingInstance -and -not (Test-IAMInstanceProfileRunCommandPermission -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
-        Write-Verbose "Writing IAM role policy..."    
-        AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+        Register-IAMRolePolicy -RoleName $role.RoleName -PolicyArn $managedRolePolicyArn -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
     Write-Verbose "Retrieving updated IAM instance profile..." 
@@ -1071,6 +997,10 @@ function Register-EC2Instance {
         }
 
         # Generate the user data to run the DSC boostrapper with the Azure Automation registration configuration
+        if (-not $DscBootstrapperVersion) {
+            $DscBootstrapperVersion = '0.1.0.0'
+        }
+
         Write-Verbose "$(Get-Date) Creating Azure Automation registration encoded user data..."
 	    $userData = Get-AwsDscUserData `
             -ConfigurationUrl $azureAutomationConfigurationUrl `
@@ -1157,8 +1087,6 @@ function Register-EC2Instance {
                 Invoke-UserDataOnEC2Instance `
                     -InstanceId $InstanceId `
                     -UserData $userData `
-                    -ExtensionVersion $DscBootstrapperVersion `
-                    -WmfVersion $WmfVersion `
                     -AccessKey $AwsAccessKey `
                     -SecretKey $AwsSecretKey `
                     -Region $AwsRegion `
@@ -1542,14 +1470,15 @@ function Test-EC2InstanceRegistration {
     
     # If the instance has a role, check that the role has the correct permissions to use Run Command and has access the an AWS encryption key
     if ($matchingProfile) {
-        if (-not (Test-IAMInstanceProfileRunCommandPermission -Name $matchingProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
-            Write-Verbose "$(Get-Date) This instance's instance profile does not have permission to use Run Command."
-            return [EC2InstanceRegistrationStatus]::NotReadyToRegister
-        }
-        
         # Check for encryption key access
         if (-not (Test-IAMInstanceProfileEncryptionKeyAccess -Name $matchingProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
             Write-Verbose "This instance does not have access to an AWS encryption key."
+            return [EC2InstanceRegistrationStatus]::NotReadyToRegister
+        }
+
+        # Check for Run Command permissions
+        if (-not (Test-IAMInstanceProfileRunCommandPermission -Name $matchingProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
+            Write-Verbose "$(Get-Date) This instance's instance profile does not have permission to use Run Command."
             return [EC2InstanceRegistrationStatus]::NotReadyToRegister
         }
     }

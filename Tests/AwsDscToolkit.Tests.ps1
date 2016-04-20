@@ -5,13 +5,8 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$AwsSecretKey,
     [Parameter(Mandatory = $true)]
-    [string]$AzureAutomationResourceGroup,
-    [Parameter(Mandatory = $true)]
     [string]$AzureAutomationAccount,
-    [Parameter(Mandatory = $true)]
-    [string]$InstanceProfile_Name,
-    [Parameter(Mandatory = $true)]
-    [string]$SecurityGroup,
+    [string]$AzureAutomationResourceGroup,
     [Parameter(Mandatory = $true)]
     [string]$KeyPair,
     [string]$AwsRegion = 'us-west-2'
@@ -25,30 +20,183 @@ if (-not (Test-Path variable:PSScriptRoot) -or -not $PSScriptRoot) {
     $PSScriptRoot = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
 }
 
+# Retrieves the Azure Automation resource group for an Azure Automation account
+function Get-AzureAutomationResourceGroup {
+    param (
+        [Parameter(Mandatory = $true)]
+        $AzureAutomationAccountName
+    )
+    
+    $accounts = AzureRM.Automation\Get-AzureRmAutomationAccount
+
+    $matchingAccounts = @()
+    foreach ($account in $accounts) {
+        if ($account.AutomationAccountName -eq $AzureAutomationAccountName) {
+            $matchingAccounts += $account
+        }
+    }
+
+    if ($matchingAccounts.Count -eq 0) {
+        throw "Azure Automation account $AzureAutomationAccountName not found."
+    }
+    elseif ($matchingAccounts.Count -gt 1) {
+        throw "Multiple Azure Automation accounts found with the name $AzureAutomationAccountName. Please specify AzureAutomationResourceGroup."
+    }
+    
+    return $matchingAccounts[0].ResourceGroupName
+}
+
+# If an Azure Automation resource group was not provided, find the resource group for the given account
+if (-not $AzureAutomationResourceGroup) {
+    Write-Verbose "$(Get-Date) Retrieving Azure Automation resource group for account $AzureAutomationAccount..."
+    $AzureAutomationResourceGroup = Get-AzureAutomationResourceGroup -AzureAutomationAccountName $AzureAutomationAccount
+}
+
 $testPrefix = 'AwsDscToolkitTest'
-
-# Custom role policy variables
-$path = '/' + $testPrefix + 'Path/'
-$pathPrefix = $path.TrimEnd('/')
-$rolePolicyName = $testPrefix + 'RolePolicy'
-$roleName = $testPrefix + 'Role'
-$instanceProfileName = $testPrefix + 'InstanceProfile'
-
-# Custom key access variables
-$keyPolicyName = $testPrefix + 'KeyPolicy'
+$testInstanceProfileName = $testPrefix + 'InstanceProfile'
 $originalKeyPolicies = @{}
+$keyPolicyName = $testPrefix + 'KeyPolicy'
 
-$invalidInstanceId = 'fakeId'
-$invalidAwsProfile = 'fakeProfileName'
+function Set-IAMInstanceProfileKeyAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RoleArn,
+        [string]$KeyId
+    )
 
-function New-EC2InstanceProfile {
+    # Give new custom instance profile access to encryption keys
+    $keyPolicyInsert = @"
+,
+    {
+      "Sid": "Allow use of the key",
+        "Effect": "Allow",
+        "Principal": {
+            "AWS": "$RoleArn"
+        },
+        "Action": [
+            "kms:Encrypt",
+            "kms:Decrypt",
+            "kms:ReEncrypt",
+            "kms:GenerateDataKey*",
+            "kms:DescribeKey"
+        ],
+        "Resource": "*"
+    } 
+  ] 
+}
+"@
+
+    if (-not $KeyId) {
+        $keys = @()
+        $keys += Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        if (-not $keys -or $keys.Count -eq 0) {
+            throw "This AWS account does not have any AWS encryption keys."
+        }
+
+        $KeyId = $keys[0].KeyId
+    }
+
+    $keyPolicies = @()
+    $keyPolicies += Get-KMSKeyPolicies -KeyId $KeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
+        $keyPolicyName = $keyPolicies[0]
+    }
+
+    $keyPolicy = Get-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    if (-not ($originalKeyPolicies.Keys -contains $keyId)) {
+        $originalKeyPolicies[$keyId] = $keyPolicy
+    }
+
+    $modifiedKeyPolicy = $keyPolicy.Remove($keyPolicy.LastIndexOf(']'), $keyPolicy.Length - $keyPolicy.LastIndexOf(']')) + $keyPolicyInsert
+
+    Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+}
+
+function Reset-IAMInstanceProfileKeyAccess {
+    [CmdletBinding()]
+    param (
+        [string]$KeyId
+    )
+
+    if (-not $originalKeyPolicies.Keys -contains $KeyId) {
+        throw "Policy for encryption key $KeyId has not been modified."
+    }
+    elseif (-not $originalKeyPolicies[$KeyId]) {
+        throw "Original key policy is null."
+    }
+
+    $keyPolicies = @()
+    $keyPolicies += Get-KMSKeyPolicies -KeyId $keyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
+        $keyPolicyName = $keyPolicies[0]
+    }
+
+    #Reset the encryption key policy
+    Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $originalKeyPolicies[$KeyId] -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+}
+
+function Remove-IAMInstanceProfileAndRole {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $InstanceProfile
+    )
+
+    $instanceRoles = $InstanceProfile.Roles
+    foreach ($instanceRole in $instanceRoles) {
+        Remove-IAMRoleFromInstanceProfile -InstanceProfileName $InstanceProfile.InstanceProfileName -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Force | Out-Null
+                
+        $attachedPolicies = Get-IAMAttachedRolePolicies -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion      
+        foreach ($attachedPolicy in $attachedPolicies) {
+            Unregister-IAMRolePolicy -PolicyArn $attachedPolicy.PolicyArn -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+        }
+
+        $inlinePolicies = Get-IAMRolePolicies -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        foreach ($inlinePolicy in $inlinePolicies) {
+            Remove-IAMRolePolicy -RoleName $instanceRole.RoleName -PolicyName $inlinePolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
+        }
+
+        Remove-IAMRole -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
+    }
+
+    Remove-IAMInstanceProfile -InstanceProfileName $InstanceProfile.InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
+}
+
+function Save-IAMInstanceProfileKeyAccess {
+    param ()
+    $keys = @()
+    $keys += Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+    if (-not $keys -or $keys.Count -eq 0) {
+        throw "This AWS account does not have any AWS encryption keys."
+    }
+
+    $keyId = $keys[0].KeyId
+
+    $keyPolicies = @()
+    $keyPolicies += Get-KMSKeyPolicies -KeyId $keyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
+        $keyPolicyName = $keyPolicies[0]
+    }
+
+    $keyPolicy = Get-KMSKeyPolicy -KeyId $keyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    $originalKeyPolicies[$keyId] = $keyPolicy
+
+    return $keyId
+}
+
+function New-IAMInstanceProfileForRegistrationInline {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
         [string]$InstanceProfileName,
-        [Parameter(Mandatory = $true)]
         [string]$RoleName,
-        [switch]$InvalidRole
+        [string]$KeyId
     )
     $roleTrustPolicyDocument = '{
         "Version": "2012-10-17",
@@ -132,32 +280,22 @@ function New-EC2InstanceProfile {
         ]
     }'
 
-    #Remove any previous left over instance profiles
-    Write-Verbose "Retrieving IAM instance profiles..."
-    $instanceProfiles = @()
-    $instanceProfiles += Get-IAMInstanceProfiles -PathPrefix $pathPrefix -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    foreach ($instanceProfile in $instanceProfiles) {
-        if ($instanceProfile.InstanceProfileName -eq $InstanceProfileName) {
-            Write-Verbose "Removing existing IAM instance profile..."
-            Remove-EC2InstanceProfile -InstanceProfile $instanceProfile
-        }
+    if (-not $RoleName) {
+        $RoleName = $InstanceProfileName
     }
         
-    #Create a  new custom instance profile
+    # Create a new custom instance profile
     Write-Verbose "Creating new IAM instance profile..."
-    $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -Path $path -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+    $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
     Write-Verbose "Creating new IAM role..."
-    $role = New-IAMRole -RoleName $RoleName -Path $path -AssumeRolePolicyDocument $roleTrustPolicyDocument -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-    
-    if (-not $InvalidRole) {
-        Write-Verbose "Writing IAM role policy..."    
-        Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName $rolePolicyName -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-    }
+    $role = New-IAMRole -RoleName $RoleName -AssumeRolePolicyDocument $roleTrustPolicyDocument -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
     Write-Verbose "Adding IAM role to IAM instance profile..." 
     Add-IAMRoleToInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+
+    Write-Verbose "Writing IAM role policy..."    
+    AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
 
     Write-Verbose "Waiting for 10 seconds while permissions propogate..."
     Start-Sleep -Seconds 10
@@ -172,293 +310,285 @@ function New-EC2InstanceProfile {
         $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
+    Set-IAMInstanceProfileKeyAccess -RoleArn $role.Arn -KeyId $KeyId
+
     return $instanceProfile
 }
 
-function Set-EC2InstanceProfileKeyAccess {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RoleArn
-    )
-
-    #Give new custom instance profile access to encryption keys
-    $keyPolicyInsert = @"
-,
-    {
-      "Sid": "Allow use of the key",
-        "Effect": "Allow",
-        "Principal": {
-            "AWS": "$RoleArn"
-        },
-        "Action": [
-            "kms:Encrypt",
-            "kms:Decrypt",
-            "kms:ReEncrypt",
-            "kms:GenerateDataKey*",
-            "kms:DescribeKey"
-        ],
-        "Resource": "*"
-    } 
-  ] 
-}
-"@
-
-    $keys = @()
-    $keys += Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-    if (-not $keys -or $keys.Count -eq 0) {
-        throw "This AWS account does not have any AWS encryption keys."
-    }
-
-    $keyId = $keys[0].KeyId
-
-    $keyPolicies = @()
-    $keyPolicies += Get-KMSKeyPolicies -KeyId $keyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
-        $keyPolicyName = $keyPolicies[0]
-    }
-
-    $keyPolicy = Get-KMSKeyPolicy -KeyId $keyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    if (-not ($originalKeyPolicies.Keys -contains $keyId)) {
-        $originalKeyPolicies[$keyId] = $keyPolicy
-    }
-
-    $modifiedKeyPolicy = $keyPolicy.Remove($keyPolicy.LastIndexOf(']'), $keyPolicy.Length - $keyPolicy.LastIndexOf(']')) + $keyPolicyInsert
-
-    #Write-Verbose "Modified key policy: $modifiedKeyPolicy"
-
-    Write-KMSKeyPolicy -KeyId $keyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-
-    return $keyId
-}
-
-function Reset-EC2InstanceProfileKeyAccess {
-    [CmdletBinding()]
+function Get-EC2InstanceAzureAutomationId {
     param (
-        [string]$KeyId
+        [Parameter(Mandatory = $true)]
+        [string]$InstanceId
     )
 
-    if (-not $originalKeyPolicies.Keys -contains $KeyId) {
-        throw "Policy for encryption key $KeyId has not been modified."
-    }
-    elseif (-not $originalKeyPolicies[$KeyId]) {
-        throw "Original key policy is null."
+    $instanceReservation = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    Write-Verbose "$(Get-Date) Checking for instance registration..."
+
+    # Check if the instance's IP address matches an IP address in the Azure Automation account's DSC nodes
+    Write-Verbose "$(Get-Date) Retrieving AWS VM IP address..." 
+    $vmIpAddress = $instanceReservation.Instances[0].PrivateIpAddress
+
+    Write-Verbose "$(Get-Date) Retrieving Azure Automation DSC nodes..."
+    $dscNodes = AzureRM.Automation\Get-AzureRmAutomationDscNode -ResourceGroupName $AzureAutomationResourceGroup -AutomationAccountName $AzureAutomationAccount
+    
+    Write-Verbose "$(Get-Date) Checking instance IP address against DSC nodes..."
+    foreach ($dscNode in $dscNodes) {
+        if ($dscNode.IpAddress.Split(';')[0] -eq $vmIpAddress) {
+            Write-Verbose "$(Get-Date) Instance is registered."
+            return $dscNode.Id
+        }
     }
 
-    $keyPolicies = @()
-    $keyPolicies += Get-KMSKeyPolicies -KeyId $keyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
-        $keyPolicyName = $keyPolicies[0]
-    }
-
-    #Reset the encryption key policy
-    Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $originalKeyPolicies[$KeyId] -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    return $null
 }
 
-function Remove-EC2InstanceProfile {
+function Invoke-WaitForEC2InstanceState {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        $InstanceProfile
+        [string]$InstanceId,
+        [Parameter(Mandatory = $true)]
+        [string]$DesiredState,
+        [Parameter(Mandatory = $true)]
+        [string]$AccessKey,
+        [Parameter(Mandatory = $true)]
+        [string]$SecretKey,
+        [Parameter(Mandatory = $true)]
+        [string]$Region
     )
 
-    $instanceRoles = $InstanceProfile.Roles
-    foreach ($instanceRole in $instanceRoles) {
-        Remove-IAMRoleFromInstanceProfile -InstanceProfileName $InstanceProfile.InstanceProfileName -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Force | Out-Null
-                
-        $attachedPolicies = Get-IAMAttachedRolePolicies -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null        
-        foreach ($attachedPolicy in $attachedPolicies) {
-            Unregister-IAMRolePolicy -PolicyArn $attachedPolicy.Arn -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-        }
+    $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-        $inlinePolicies = Get-IAMRolePolicies -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-        foreach ($inlinePolicy in $inlinePolicies) {
-            Remove-IAMRolePolicy -RoleName $instanceRole.RoleName -PolicyName $inlinePolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
-        }
-
-        Remove-IAMRole -RoleName $instanceRole.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
+    # Wait until the instance is in the desired state
+    while ($instance.RunningInstance.State.Name -ne $DesiredState) {
+        Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
+        Start-Sleep -Seconds 10
+        $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     }
-
-    Remove-IAMInstanceProfile -InstanceProfileName $InstanceProfile.InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion  -Force | Out-Null
 }
 
-Describe 'Register-EC2Instance and Test-EC2InstanceRegistration (Registered)' {
-    $imageId = (Get-EC2ImageByName -Name 'WINDOWS_2012R2_BASE' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion).ImageId
+function Invoke-WaitForEC2InstanceStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstanceId,
+        [Parameter(Mandatory = $true)]
+        [string]$DesiredStatus
+    )
 
-    # Error tests
-    It 'Should throw an error when invalid AWS credentials profile specified' {
-        {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -New -AwsProfile $invalidAwsProfile} | Should Throw "No AWS credentials"
+    $instanceStatus = AWSPowershell\Get-EC2InstanceStatus $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    # Wait until the instance has the desired status
+    while ($instanceStatus.Status.Status.Value -ne $DesiredStatus) {
+        Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value). Waiting for 10 seconds..."
+        Start-Sleep -Seconds 10
+        $instanceStatus = AWSPowershell\Get-EC2InstanceStatus $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
+}
 
-    It 'Should throw an error when no AWS region specified or in defaults' { 
-        {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -New -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey} | Should Throw "No default AWS region. Please specify an AWS region or follow the guide here to set your default region: http://docs.aws.amazon.com/powershell/latest/userguide/pstools-installing-specifying-region.html"
-    }
+function Invoke-WaitForEC2InstanceRegistered {
+     param (
+        [Parameter(Mandatory = $true)]
+        [string]$InstanceId,
+        [int]$TimeoutMins = 10
+    )
 
-    It 'Should throw an error when both instance id and new flag specified' {
-        {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -InstanceId $invalidInstanceId -New -Verbose} | Should Throw 'Cannot register an existing instance and a new instance at the same time.'
-    }
+    $status = [EC2InstanceRegistrationStatus]::ReadyToRegister
+    $startTime = Get-Date
+    $runningTime = (Get-Date) - (Get-Date)
 
-    It 'Should throw an error when neither instance id nor new flag specified' {
-        {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -Verbose} | Should Throw 'Either the new flag or an existing instance id must be specified.'
-    }
-
-    # Positive tests
-    It 'Should register an existing instance' {
-        $instanceReservation = New-EC2Instance `
-            -ImageId $imageId `
-            -KeyName $KeyPair `
-            -SecurityGroup $SecurityGroup `
-            -InstanceType 't2.micro' `
-            -InstanceProfile_Name $InstanceProfile_Name `
-            -AccessKey $AwsAccessKey `
-            -SecretKey $AwsSecretKey `
-            -Region $AwsRegion
-
-        $instanceId = $instanceReservation.Instances[0].InstanceId
-
-        try {
-            Register-EC2Instance `
-                -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
-                -AzureAutomationAccount $AzureAutomationAccount `
-                -InstanceId $instanceId `
-                -AwsAccessKey $AwsAccessKey `
-                -AwsSecretKey $AwsSecretKey `
-                -AwsRegion $AwsRegion `
-                -Verbose `
-                -DscBootstrapperVersion '0.0.0.1' `
-                | Out-Null
-
-            $status = [EC2InstanceRegistrationStatus]::ReadyToRegister
-            $timeoutMins = 10
-            $startTime = Get-Date
-            $runningTime = (Get-Date) - (Get-Date)
-
-            while ($status -eq [EC2InstanceRegistrationStatus]::ReadyToRegister -and $runningTime.Minutes -lt $timeoutMins) {
-                Write-Verbose "$(Get-Date) Registration not found. Waiting 10 seconds..."
-                Start-Sleep -Seconds 10
+    while ($status -ne [EC2InstanceRegistrationStatus]::Registered -and $runningTime.Minutes -lt $TimeoutMins) {
+        Write-Verbose "$(Get-Date) Registration not found. Waiting 10 seconds..."
+        Start-Sleep -Seconds 10
             
-                $status = Test-EC2InstanceRegistration `
-                    -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
-                    -AzureAutomationAccount $AzureAutomationAccount `
-                    -InstanceId $instanceId `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion
-
-                $currentTime = Get-Date
-                $runningTime = $currentTime - $startTime
-            }
-        
-            $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
-        }
-        finally {
-            Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-        }
-    }
-
-    It 'Should register a new instance' {
-        $instanceReservation = Register-EC2Instance `
+        $status = Test-EC2InstanceRegistration `
             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
             -AzureAutomationAccount $AzureAutomationAccount `
-            -New `
-            -ImageId $imageId `
-            -KeyName $KeyPair `
-            -SecurityGroup $SecurityGroup `
-            -InstanceType 't2.micro' `
-            -InstanceProfile_Name $InstanceProfile_Name `
+            -InstanceId $instanceId `
             -AwsAccessKey $AwsAccessKey `
             -AwsSecretKey $AwsSecretKey `
-            -AwsRegion $AwsRegion `
-            -Verbose `
-            -DscBootstrapperVersion '0.0.0.1'
+            -AwsRegion $AwsRegion
 
-        $instanceId = $instanceReservation.Instances[0].InstanceId
+        $currentTime = Get-Date
+        $runningTime = $currentTime - $startTime
+    }
+
+    return $status
+}
+
+Describe 'IAMInstanceProfileForRegistration' {
+    It 'Should create a new valid IAM Instance Profile (New Instance)' {
+        $keyId = Save-IAMInstanceProfileKeyAccess
 
         try {
-            $status = [EC2InstanceRegistrationStatus]::ReadyToRegister
-            $timeoutMins = 10
-            $startTime = Get-Date
-            $runningTime = (Get-Date) - (Get-Date)
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                -Name $testInstanceProfileName `
+                -AwsAccessKey $AwsAccessKey `
+                -AwsSecretKey $AwsSecretKey `
+                -AwsRegion $AwsRegion `
+                -KeyId $keyId
 
-            while ($status -eq [EC2InstanceRegistrationStatus]::ReadyToRegister -and $runningTime.Minutes -lt $timeoutMins) {
-                Write-Verbose "$(Get-Date) Registration not found. Waiting 10 seconds..."
-                Start-Sleep -Seconds 10
-
-                $status = Test-EC2InstanceRegistration `
-                    -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
-                    -AzureAutomationAccount $AzureAutomationAccount `
-                    -InstanceId $instanceId `
+            try {
+                $testResult = Test-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
                     -AwsAccessKey $AwsAccessKey `
                     -AwsSecretKey $AwsSecretKey `
                     -AwsRegion $AwsRegion
 
-                $currentTime = Get-Date
-                $runningTime = $currentTime - $startTime
+                $testResult | Should Be $true
             }
-        
-            $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
+            finally {
+                Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
+            }
         }
         finally {
-            Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+            Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
         }
     }
 
-    It 'Should be able to pipe between Register-EC2Instance and Test-EC2InstanceRegistration' {
-        $instanceReservation = New-EC2Instance `
-            -ImageId $imageId `
-            -KeyName $KeyPair `
-            -SecurityGroup $SecurityGroup `
-            -InstanceType 't2.micro' `
-            -InstanceProfile_Name $InstanceProfile_Name `
-            -AccessKey $AwsAccessKey `
-            -SecretKey $AwsSecretKey `
-            -Region $AwsRegion
-
-        $instanceId = $instanceReservation.Instances[0].InstanceId
+    It 'Should create a new valid IAM Instance Profile (Existing Instance)' {
+        $keyId = Save-IAMInstanceProfileKeyAccess
 
         try {
-            Register-EC2Instance `
-                -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
-                -AzureAutomationAccount $AzureAutomationAccount `
-                -InstanceId $instanceId `
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                -Name $testInstanceProfileName `
+                -ExistingInstance `
                 -AwsAccessKey $AwsAccessKey `
                 -AwsSecretKey $AwsSecretKey `
                 -AwsRegion $AwsRegion `
-                -Verbose `
-                -DscBootstrapperVersion '0.0.0.1' `
-            | Test-EC2InstanceRegistration `
-                -AzureAutomationAccount $AzureAutomationAccount `
-                -AwsAccessKey $AwsAccessKey `
-                -AwsSecretKey $AwsSecretKey `
-                -AwsRegion $AwsRegion `
-            | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
+                -KeyId $keyId
+
+            try {
+                $testResult = Test-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
+                    -ExistingInstance `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                $testResult | Should Be $true
+            }
+            finally {
+                Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
+            }
         }
         finally {
-            Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+            Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
+        }
+    }
+
+    It 'Should modify an existing IAM Instance Profile (New Instance)' {
+        $keyId = Save-IAMInstanceProfileKeyAccess
+
+        try {
+            $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $testInstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+            # Wait for the profile to be available outside IAM
+            Start-Sleep -Seconds 10
+
+            try {
+                $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                    -Name $testInstanceProfileName `
+                    -KeyId $keyId `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                $testResult = Test-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                $testResult | Should Be $true
+            }
+            finally {
+                Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
+            }
+        }
+        finally {
+            Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
+        }
+    }
+
+    It 'Should modify an existing IAM Instance Profile (Existing Instance)' {
+        $keyId = Save-IAMInstanceProfileKeyAccess
+
+        try {
+            $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $testInstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+            # Wait for the profile to be available outside IAM
+            Start-Sleep -Seconds 10
+
+            try {
+                $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                    -Name $testInstanceProfileName `
+                    -ExistingInstance `
+                    -KeyId $keyId `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                $testResult = Test-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
+                    -ExistingInstance `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                $testResult | Should Be $true
+            }
+            finally {
+                Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
+            }
+        }
+        finally {
+            Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
         }
     }
 }
 
-Describe 'Test-EC2InstanceRegistration (CannotRegister, NotReadyToRegister, ReadyToRegister)' {
-    $imageId = (Get-EC2ImageByName -Name 'WINDOWS_2012R2_BASE' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion).ImageId
+$instanceType = 't2.micro'
 
-    $testInstanceProfile = New-EC2InstanceProfile -InstanceProfileName $instanceProfileName -RoleName $roleName
+$imageName = 'WINDOWS_2012R2_BASE'
+$imageId = (Get-EC2ImageByName -Name $imageName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion).ImageId
 
-    try {
+$testSecurityGroupName = $testPrefix + 'SecurityGroup'
+$testSecurityGroupDescription = 'Security group for AWS DSC Toolkit tests.'
+$testSecurityGroup = New-EC2SecurityGroup `
+    -GroupName $testSecurityGroupName `
+    -Description $testSecurityGroupDescription `
+    -AccessKey $AwsAccessKey `
+    -SecretKey $AwsSecretKey `
+    -Region $AwsRegion
+
+try {
+    Describe 'Test-EC2InstanceRegistration' {
+        $invalidInstanceId = 'fakeId'
+        $invalidAwsProfile = 'fakeProfileName'
+
         # Error Tests
         It 'Should throw an error when invalid AWS credentials profile specified' {
-            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsProfile $invalidAwsProfile} | Should Throw "No AWS credentials"
+            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsProfile $invalidAwsProfile} `
+            | Should Throw "No AWS credentials"
         }
 
-        It 'Should throw an error when no AWS region specified or in defaults' { 
-            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey} | Should Throw "No default AWS region. Please specify an AWS region or follow the guide here to set your default region: http://docs.aws.amazon.com/powershell/latest/userguide/pstools-installing-specifying-region.html"
+        It 'Should throw an error when no AWS region specified or in defaults' {
+            $savedRegion = Get-DefaultAwsRegion
+            Clear-DefaultAwsRegion
+
+            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey} `
+            | Should Throw "No default AWS region. Please specify an AWS region or follow the guide here to set your default region: http://docs.aws.amazon.com/powershell/latest/userguide/pstools-installing-specifying-region.html"
+        
+            if ($savedRegion) {
+                Set-DefaultAwsRegion $savedRegion
+            }
         }
 
         It 'Should throw an error when invalid instance id specified' {
-            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion} | Should Throw 'Invalid id: "' + $invalidInstanceId + '"'
+            {Test-EC2InstanceRegistration -InstanceId $invalidInstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion} `
+            | Should Throw 'Invalid id: "' + $invalidInstanceId + '"'
         }
 
         # Negative Tests
@@ -466,8 +596,8 @@ Describe 'Test-EC2InstanceRegistration (CannotRegister, NotReadyToRegister, Read
             $instanceReservation = New-EC2Instance `
                 -ImageId $imageId `
                 -KeyName $KeyPair `
-                -SecurityGroup $SecurityGroup `
-                -InstanceType 't2.micro' `
+                -SecurityGroup $testSecurityGroupName `
+                -InstanceType $instanceType `
                 -AccessKey $AwsAccessKey `
                 -SecretKey $AwsSecretKey `
                 -Region $AwsRegion
@@ -483,18 +613,72 @@ Describe 'Test-EC2InstanceRegistration (CannotRegister, NotReadyToRegister, Read
             }
         }
 
-        It 'Should return NotReadyToRegister when instance does not have the correct IAM role permissions to use Run Command' {
-            $invalidInstanceProfileName = $testPrefix + 'InvalidInstanceProfile'
-            $invalidRoleName = $testPrefix + 'InvalidRole'
+        $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $testInstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-            $instanceProfile = New-EC2InstanceProfile -InstanceProfileName $invalidInstanceProfileName -RoleName $invalidRoleName -InvalidRole
+        $roleTrustPolicyDocument = '{
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"Service": "ec2.amazonaws.com"},
+                "Action": "sts:AssumeRole"
+            }
+        }'
+        $instanceRole = New-IAMRole `
+            -RoleName $testInstanceProfileName `
+            -AssumeRolePolicyDocument $roleTrustPolicyDocument `
+            -AccessKey $AwsAccessKey `
+            -SecretKey $AwsSecretKey `
+            -Region $AwsRegion
 
-            try {
+        Add-IAMRoleToInstanceProfile `
+            -InstanceProfileName $instanceProfile.InstanceProfileName `
+            -RoleName $instanceRole.RoleName `
+            -AccessKey $AwsAccessKey `
+            -SecretKey $AwsSecretKey `
+            -Region $AwsRegion `
+        | Out-Null
+        
+        # Wait for instance profile to propogate  outside IAM
+        Start-Sleep -Seconds 10
+
+        $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+        try {
+            Context 'No encryption keys on account' {
+                Mock Get-AwsEncryptionKeys -ModuleName AwsDscToolkit -MockWith {
+                    return $null
+                }
+
+                It 'Should return NotReadyToRegister when no encryption keys available' {
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                        Assert-MockCalled Get-AwsEncryptionKeys -ModuleName AwsDscToolkit
+                        $testResult | Should Be ([EC2InstanceRegistrationStatus]::NotReadyToRegister)
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+            }
+
+            It 'Should return NotReadyToRegister when instance role does not have access to an encryption key' {
                 $instanceReservation = New-EC2Instance `
                     -ImageId $imageId `
                     -KeyName $KeyPair `
-                    -SecurityGroup $SecurityGroup `
-                    -InstanceType 't2.micro' `
+                    -SecurityGroup $testSecurityGroupName `
+                    -InstanceType $instanceType `
                     -InstanceProfile_Name $instanceProfile.InstanceProfileName `
                     -AccessKey $AwsAccessKey `
                     -SecretKey $AwsSecretKey `
@@ -510,249 +694,315 @@ Describe 'Test-EC2InstanceRegistration (CannotRegister, NotReadyToRegister, Read
                     Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
                 }
             }
+
+            $keyId = Save-IAMInstanceProfileKeyAccess
+
+            try {
+                $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
+                    -KeyId $keyId `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                It 'Should return NotReadyToRegister when instance does not have the correct IAM role permissions to use Run Command' {
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                        $testResult | Should Be ([EC2InstanceRegistrationStatus]::NotReadyToRegister)
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+
+                # Positive Tests
+                $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                    -Name $instanceProfile.InstanceProfileName `
+                    -KeyId $keyId `
+                    -ExistingInstance `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                It 'Should return ReadyToRegister for instance with AWS managed role policy' {
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                        $testResult | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+            }
             finally {
-                Remove-EC2InstanceProfile -InstanceProfile $instanceProfile -Verbose
+                Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
             }
         }
+        finally {
+            Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile -Verbose
+        }
 
-        Context 'No encryption keys on account' {
-            Mock Get-AwsEncryptionKeys -ModuleName AwsDscToolkit -MockWith {
-                return $null
-            }
+        It 'Should return ReadyToRegister for instance with inline role policy' {
+            $keyId = Save-IAMInstanceProfileKeyAccess
 
-            It 'Should return NotReadyToRegister when no encryption keys available' {
-                $instanceReservation = New-EC2Instance `
-                    -ImageId $imageId `
-                    -KeyName $KeyPair `
-                    -SecurityGroup $SecurityGroup `
-                    -InstanceType 't2.micro' `
-                    -InstanceProfile_Name $testInstanceProfile.InstanceProfileName `
-                    -AccessKey $AwsAccessKey `
-                    -SecretKey $AwsSecretKey `
-                    -Region $AwsRegion
-
-                $instanceId = $instanceReservation.Instances[0].InstanceId
+            try {
+                $inlineInstanceProfile = New-IAMInstanceProfileForRegistrationInline -InstanceProfileName $testInstanceProfileName -KeyId $keyId
 
                 try {
-                    $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
-                    Assert-MockCalled Get-AwsEncryptionKeys -ModuleName AwsDscToolkit
-                    $testResult | Should Be ([EC2InstanceRegistrationStatus]::NotReadyToRegister)
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $inlineInstanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                        $testResult | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
                 }
                 finally {
-                    Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-                }
-            }
-        }
-
-        It 'Should return NotReadyToRegister when instance role does not have access to an encryption key' {
-            $instanceReservation = New-EC2Instance `
-                -ImageId $imageId `
-                -KeyName $KeyPair `
-                -SecurityGroup $SecurityGroup `
-                -InstanceType 't2.micro' `
-                -InstanceProfile_Name $testInstanceProfile.InstanceProfileName `
-                -AccessKey $AwsAccessKey `
-                -SecretKey $AwsSecretKey `
-                -Region $AwsRegion
-
-            $instanceId = $instanceReservation.Instances[0].InstanceId
-
-            try {
-                $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
-                $testResult | Should Be ([EC2InstanceRegistrationStatus]::NotReadyToRegister)
-            }
-            finally {
-                Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-            }
-        }
-
-        # Positive Tests
-        It 'Should return ReadyToRegister for instance with AWS managed instance role policy' {
-            $instanceReservation = New-EC2Instance `
-                -ImageId $imageId `
-                -KeyName $KeyPair `
-                -SecurityGroup $SecurityGroup `
-                -InstanceType 't2.micro' `
-                -InstanceProfile_Name $InstanceProfile_Name `
-                -AccessKey $AwsAccessKey `
-                -SecretKey $AwsSecretKey `
-                -Region $AwsRegion
-
-            $instanceId = $instanceReservation.Instances[0].InstanceId
-
-            try {
-                $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
-                $testResult | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
-            }
-            finally {
-                Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-            }
-        }
-
-        It 'Should return ReadyToRegister for instance with custom instance role policy' {
-            $role = Get-IAMRole -RoleName $testInstanceProfile.Roles[0].RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-            $keyId = Set-EC2InstanceProfileKeyAccess -RoleArn $role.Arn -Verbose
-
-            try {
-                $instanceReservation = New-EC2Instance `
-                    -ImageId $imageId `
-                    -KeyName $KeyPair `
-                    -SecurityGroup $SecurityGroup `
-                    -InstanceType 't2.micro' `
-                    -InstanceProfile_Name $testInstanceProfile.InstanceProfileName `
-                    -AccessKey $AwsAccessKey `
-                    -SecretKey $AwsSecretKey `
-                    -Region $AwsRegion
-
-                $instanceId = $instanceReservation.Instances[0].InstanceId
-
-                try {
-                    $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
-                    $testResult | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
-                }
-                finally {
-                    Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    Remove-IAMInstanceProfileAndRole -InstanceProfile $inlineInstanceProfile
                 }
             }
             finally {
-                Reset-EC2InstanceProfileKeyAccess -KeyId $keyId -Verbose
+                Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
             }
         }
     }
-    finally {
-        Remove-EC2InstanceProfile -InstanceProfile $testInstanceProfile -Verbose
+
+    Describe 'Register-EC2Instance' {
+        $invalidInstanceId = 'fakeId'
+        $invalidAwsProfile = 'fakeProfileName'
+
+        # Error tests
+        It 'Should throw an error when invalid AWS credentials profile specified' {
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -New -AwsProfile $invalidAwsProfile} `
+            | Should Throw "No AWS credentials"
+        }
+
+        It 'Should throw an error when no AWS region specified or in defaults' {
+            $savedRegion = Get-DefaultAwsRegion
+            Clear-DefaultAwsRegion
+
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -New -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey} `
+            | Should Throw "No default AWS region. Please specify an AWS region or follow the guide here to set your default region: http://docs.aws.amazon.com/powershell/latest/userguide/pstools-installing-specifying-region.html"
+        
+            if ($savedRegion) {
+                Set-DefaultAwsRegion $savedRegion
+            }
+        }
+
+        It 'Should throw an error when both instance id and new flag specified' {
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -InstanceId $invalidInstanceId -New -Verbose} `
+            | Should Throw 'Cannot register an existing instance and a new instance at the same time.'
+        }
+
+        It 'Should throw an error when neither instance id nor new flag specified' {
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -Verbose} `
+            | Should Throw 'Either the new flag or an existing instance id must be specified.'
+        }
+
+        # Positive tests
+        $keyId = Save-IAMInstanceProfileKeyAccess
+
+        try {
+            $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                -Name $testInstanceProfileName `
+                -KeyId $keyId `
+                -AwsAccessKey $AwsAccessKey `
+                -AwsSecretKey $AwsSecretKey `
+                -AwsRegion $AwsRegion
+
+            try {
+                It 'Should register a new instance' {
+                    $instanceReservation = Register-EC2Instance `
+                        -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
+                        -AzureAutomationAccount $AzureAutomationAccount `
+                        -New `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AwsAccessKey $AwsAccessKey `
+                        -AwsSecretKey $AwsSecretKey `
+                        -AwsRegion $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+        
+                        $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
+
+                        $azureAutomationId = Get-EC2InstanceAzureAutomationId -InstanceId $instanceId
+
+                        if ($azureAutomationId) {
+                            Unregister-AzureRmAutomationDscNode `
+                                -ResourceGroupName $AzureAutomationResourceGroup `
+                                -AutomationAccountName $AzureAutomationAccount `
+                                -Id $azureAutomationId `
+                                -Force `
+                            | Out-Null
+                        }
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+
+                $instanceProfile = Set-IAMInstanceProfileForRegistration `
+                    -Name $testInstanceProfileName `
+                    -KeyId $keyId `
+                    -ExistingInstance `
+                    -AwsAccessKey $AwsAccessKey `
+                    -AwsSecretKey $AwsSecretKey `
+                    -AwsRegion $AwsRegion
+
+                It 'Should register an existing instance' {
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+
+                        $instanceReservation = Register-EC2Instance `
+                            -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
+                            -AzureAutomationAccount $AzureAutomationAccount `
+                            -InstanceId $instanceId `
+                            -AwsAccessKey $AwsAccessKey `
+                            -AwsSecretKey $AwsSecretKey `
+                            -AwsRegion $AwsRegion
+
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+        
+                        $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
+
+                        $azureAutomationId = Get-EC2InstanceAzureAutomationId -InstanceId $instanceId
+
+                        if ($azureAutomationId) {
+                            Unregister-AzureRmAutomationDscNode `
+                                -ResourceGroupName $AzureAutomationResourceGroup `
+                                -AutomationAccountName $AzureAutomationAccount `
+                                -Id $azureAutomationId `
+                                -Force `
+                            | Out-Null
+                        }
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+
+                It 'Should be able to pipe between Register-EC2Instance and Test-EC2InstanceRegistration' {
+                    $instanceReservation = New-EC2Instance `
+                        -ImageId $imageId `
+                        -KeyName $KeyPair `
+                        -SecurityGroup $testSecurityGroupName `
+                        -InstanceType $instanceType `
+                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -AccessKey $AwsAccessKey `
+                        -SecretKey $AwsSecretKey `
+                        -Region $AwsRegion
+
+                    $instanceId = $instanceReservation.Instances[0].InstanceId
+
+                    try {
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+
+                        Register-EC2Instance `
+                            -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
+                            -AzureAutomationAccount $AzureAutomationAccount `
+                            -InstanceId $instanceId `
+                            -AwsAccessKey $AwsAccessKey `
+                            -AwsSecretKey $AwsSecretKey `
+                            -AwsRegion $AwsRegion `
+                        | Test-EC2InstanceRegistration `
+                            -AzureAutomationAccount $AzureAutomationAccount `
+                            -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
+                            -AwsAccessKey $AwsAccessKey `
+                            -AwsSecretKey $AwsSecretKey `
+                            -AwsRegion $AwsRegion `
+                        | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
+
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+        
+                        $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
+
+                        $azureAutomationId = Get-EC2InstanceAzureAutomationId -InstanceId $instanceId
+
+                        if ($azureAutomationId) {
+                            Unregister-AzureRmAutomationDscNode `
+                                -ResourceGroupName $AzureAutomationResourceGroup `
+                                -AutomationAccountName $AzureAutomationAccount `
+                                -Id $azureAutomationId `
+                                -Force `
+                            | Out-Null
+                        }
+                    }
+                    finally {
+                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+                    }
+                }
+            }
+            finally {
+                Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
+            }
+        }
+        finally {
+            Reset-IAMInstanceProfileKeyAccess -KeyId $keyId
+        }
     }
 }
-
-Describe 'Set-IAMInstanceProfileForRegistration and Test-IAMInstanceProfileForRegistration' {
-    $instanceProfileName = 'TestInstanceProfile'
-
-    $keys = @()
-    $keys += Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-    if (-not $keys -or $keys.Count -eq 0) {
-        throw "This AWS account does not have any AWS encryption keys."
-    }
-
-    $keyId = $keys[0].KeyId
-
-    $keyPolicies = @()
-    $keyPolicies += Get-KMSKeyPolicies -KeyId $keyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    if ($keyPolicies -and $keyPolicies.Count -gt 0) {
-        $keyPolicyName = $keyPolicies[0]
-    }
-
-    $keyPolicy = Get-KMSKeyPolicy -KeyId $keyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-
-    $originalKeyPolicies[$keyId] = $keyPolicy
-
-    try {
-        It 'Should create a new valid IAM Instance Profile (New Instance)' {
-            try {
-                $instanceProfile = Set-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult = Test-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult | Should Be $true
-            }
-            finally {
-                Remove-EC2InstanceProfile -InstanceProfile $instanceProfile
-            }
-        }
-
-        It 'Should create a new valid IAM Instance Profile (Existing Instance)' {
-            try {
-                $instanceProfile = Set-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -ExistingInstance `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult = Test-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -ExistingInstance `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult | Should Be $true
-            }
-            finally {
-                Remove-EC2InstanceProfile -InstanceProfile $instanceProfile
-            }
-        }
-
-        It 'Should modify an existing IAM Instance Profile (New Instance)' {
-            try {
-                $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $instanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-                Start-Sleep -Seconds 10
-
-                $instanceProfile = Set-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult = Test-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult | Should Be $true
-            }
-            finally {
-                Remove-EC2InstanceProfile -InstanceProfile $instanceProfile
-            }
-        }
-
-        It 'Should modify an existing IAM Instance Profile (Existing Instance)' {
-            try {
-                $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $instanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-                Start-Sleep -Seconds 10
-            
-                $instanceProfile = Set-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -ExistingInstance `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult = Test-IAMInstanceProfileForRegistration `
-                    -Name $instanceProfileName `
-                    -ExistingInstance `
-                    -AwsAccessKey $AwsAccessKey `
-                    -AwsSecretKey $AwsSecretKey `
-                    -AwsRegion $AwsRegion `
-                    -Verbose
-
-                $testResult | Should Be $true
-            }
-            finally {
-                Remove-EC2InstanceProfile -InstanceProfile $instanceProfile
-            }
-        }
-    }
-    finally {
-        Reset-EC2InstanceProfileKeyAccess $keyId
-    }
+finally {
+    # Wait for all instances to terminate before removing security group
+    Start-Sleep -Seconds 60
+    Remove-EC2SecurityGroup -GroupName $testSecurityGroupName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Force
 }
