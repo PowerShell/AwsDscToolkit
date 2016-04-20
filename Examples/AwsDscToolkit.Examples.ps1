@@ -1,27 +1,30 @@
-﻿#--- Basic Setup ---#
+﻿#--- Module Setup ---#
 
 # Install the AWS DSC Toolkit from the PowerShellGallery
 Install-Module AwsDscToolkit
 Import-Module AwsDscToolkit
 
 # Set your AWS credentials in the default profile
-Set-AWSCredentials -AccessKey $AccessKey -SecretKey $SecretKey -StoreAs 'default'
+$AwsAccessKey = 'MyAccessKey'
+$AwsSecretKey = 'MySecretKey'
+Set-AWSCredentials -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -StoreAs 'default'
 
 # Set your default AWS region
 $AwsRegion = 'us-west-2'
 Set-DefaultAWSRegion -Region $AwsRegion
 
 # Log in to AzureRm
-Login-AzureRmAccount
+Add-AzureRmAccount
 
 
 #--- Register a New EC2 Instance ---#
 
-# Create a valid security group
-$securityGroupName = 'SecurityGroup'
-$securityGroup = New-EC2SecurityGroup -GroupName $securityGroupName -Description 'Security group for registration to Azure Automation'
+# Create a valid security group or supply the name of an exisitng one
+$securityGroupName = 'MySecurityGroup'
+New-EC2SecurityGroup -GroupName $securityGroupName -Description 'Security group for registration to Azure Automation'
 
-# Create a valid IAM instance profile for a new instance 
+# Create a valid IAM instance profile for a new instance
+$instanceProfileName = 'MyInstanceProfile'
 $instanceProfile = Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
 # OR
 # Test that an existing IAM instance profile is valid to register a new instance
@@ -38,8 +41,8 @@ $imageId = $(Get-EC2ImageByName -Name $imageName).ImageId
 $instanceType = 't2.micro'
 
 # Register a new instance
-$keyPairName = 'TestKeyPair'
-$azureAutomationAccountName = 'TestAzureAutomation'
+$keyPairName = 'MyKeyPair'
+$azureAutomationAccountName = 'MyAzureAutomationAccount'
 
 Register-EC2Instance `
     -AzureAutomationAccount $azureAutomationAccountName `
@@ -54,25 +57,24 @@ Register-EC2Instance `
 #--- Register an Existing EC2 Instance ---#
 
 # Test if the instance can be registered
-$instanceId = 'i-9c3d7344'
-Test-EC2InstanceRegistration -InstanceId $instanceId -Verbose
+$existingInstanceId = 'MyExistingInstanceId'
+Test-EC2InstanceRegistration -InstanceId $existingInstanceId -Verbose
 
-# Test that an existing IAM instance profile is valid to register an existing instance
-Test-IAMInstanceProfileForRegistration -Name $existingInstanceName -ExistingInstance
+# Test that the existing IAM instance profile is valid to register an existing instance
+$existingInstanceProfileName = 'MyExistingInstanceProfile'
+Test-IAMInstanceProfileForRegistration -Name $existingInstanceProfileName -ExistingInstance
 # AND
 # Modify an existing IAM instance profile to be valid to register an existing instance
-Set-IAMInstanceProfileForRegistration -Name $existingInstanceName -ExistingInstance
-
+Set-IAMInstanceProfileForRegistration -Name $existingInstanceProfileName -ExistingInstance
 
 # Register an existing instance
-$azureAutomationAccountName = 'TestAzureAutomation'
-
-Register-EC2Instance -AzureAutomationAccount $azureAutomationAccountName -InstanceId $instanceId
+$azureAutomationAccountName = 'MyAzureAutomationAccount'
+$existingInstanceId = 'MyExistingInstanceId'
+Register-EC2Instance -AzureAutomationAccount $azureAutomationAccountName -InstanceId $existingInstanceId
 
 
 #--- Check if an EC2 Instance is Registered ---#
 
-$azureAutomationAccountName = 'TestAzureAutomation'
-$registeredInstanceId = 'i-3cfcc5fb'
-
+$azureAutomationAccountName = 'MyAzureAutomation'
+$registeredInstanceId = 'MyRegisteredInstanceId'
 Test-EC2InstanceRegistration -AzureAutomationAccount $azureAutomationAccountName -InstanceId $registeredInstanceId

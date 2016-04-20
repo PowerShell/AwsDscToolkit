@@ -44,8 +44,8 @@ function ConvertFrom-StringToMemoryStream {
     return $memoryStream
 }
 
-# This is a wrapper method for the AWSPowershell Get-KMSKeys cmdlet for tests
-function Get-AwsEncryptionKeys {
+# Retrieves the first AWS encryption key on the account
+function Get-AwsEncryptionKeyId {
     param (
         [string]
         $AccessKey,
@@ -54,7 +54,16 @@ function Get-AwsEncryptionKeys {
         [string]
         $Region
     )
-    return AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+    $keys = @()
+    $keys += AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+
+    if (-not $keys -or $keys.Count -eq 0) {
+        throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key via the AWS console."
+    }
+
+    $keyId = $keys[0].KeyId
+
+    return $keyId
 }
 
 # Converts a hashtable of protected settings to an encryted base 64 string using the AWS Key Management Service
@@ -62,6 +71,7 @@ function ConvertTo-EncryptedProtectedSettingsString {
     [OutputType([string])]
     [CmdletBinding()]
     param(
+        [string]$KeyId,
         [Parameter(Mandatory = $true)]
 		[string]$AccessKey,
         [Parameter(Mandatory = $true)]
@@ -75,23 +85,18 @@ function ConvertTo-EncryptedProtectedSettingsString {
 
     if ($ProtectedSettings) {
         #Convert protected settings to JSON string
-        $protectedSettingsJson = ConvertTo-Json $ProtectedSettings -Verbose
+        $protectedSettingsJson = ConvertTo-Json $ProtectedSettings
 
         #Convert JSON string to memory stream
-        $protectedSettingsMemoryStream = ConvertFrom-StringToMemoryStream $protectedSettingsJson -Verbose
+        $protectedSettingsMemoryStream = ConvertFrom-StringToMemoryStream $protectedSettingsJson
 
         #Get a key id
-        $keys = @()
-        $keys += Get-AwsEncryptionKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
-
-        if (-not $keys -or $keys.Count -eq 0) {
-            throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key via the AWS console."
+        if (-not $KeyId) {
+            $KeyId = Get-AwsEncryptionKeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
         }
 
-        $keyId = $keys[0].KeyId
-
         #Encrypt memory stream
-        $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $keyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+        $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $keyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
         #Convert response memory stream to base 64
         $encryptedProtectedSettings = ConvertTo-Base64FromMemoryStream $encryptedResponse.CiphertextBlob -Verbose
@@ -123,7 +128,7 @@ function ConvertTo-ConfigArgStringFromHashtable {
 		}
         elseif ($Hashtable[$key].GetType() -ieq @{}.GetType()) {
             #If the argument is a hashtable, recurse to convert that hashtable to a string as well
-            $hashtableString += "$key = $(ConvertTo-ConfigArgStringFromHashtable $Hashtable[$key] -Verbose);"
+            $hashtableString += "$key = $(ConvertTo-ConfigArgStringFromHashtable $Hashtable[$key]);"
         }
         elseif ($Hashtable[$key].GetType() -ieq $true.GetType()) {
             #If the argument is a boolean, convert it to 1 or 0
@@ -189,6 +194,7 @@ function Get-AwsDscUserData {
 		[Hashtable]$ProtectedConfigurationArguments,
 		[string]$ExtensionVersion = '0.1.0.0',
         [string]$WmfVersion = 'latest',
+        [string]$KeyId,
         [Parameter(Mandatory = $true)]
         [string]$AccessKey,
         [Parameter(Mandatory = $true)]
@@ -203,11 +209,11 @@ function Get-AwsDscUserData {
 	$extensionFileLocation = 'C:\AWSDSCBootstrapper.ps1'
 
     #Convert public arguments to a string so that the AWS agent will process the command correctly
-	$configurationArgumentsString = ConvertTo-ConfigArgStringFromHashtable $ConfigurationArguments -Verbose
+	$configurationArgumentsString = ConvertTo-ConfigArgStringFromHashtable $ConfigurationArguments
 
     #Configure and encrypt protected arguments
     $protectedSettingsContainer = @{ configurationArguments = $ProtectedConfigurationArguments }
-    $encryptedProtectedArguments = ConvertTo-EncryptedProtectedSettingsString -ProtectedSettings $protectedSettingsContainer -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+    $encryptedProtectedArguments = ConvertTo-EncryptedProtectedSettingsString -ProtectedSettings $protectedSettingsContainer -KeyId $KeyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
     #Create the user data with given config and arguments
     Write-Verbose "$(Get-Date) Creating user data..."
@@ -332,7 +338,7 @@ $xml.Save($EC2SettingsFile)
     AWSPowershell\Stop-EC2Instance -Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region | Out-Null
 
     #Wait until the instance stops
-    Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'stopped' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+    Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'stopped' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     
     #Set the user data
     Write-Verbose "$(Get-Date) Editting user data..."
@@ -343,7 +349,7 @@ $xml.Save($EC2SettingsFile)
     AWSPowershell\Start-EC2Instance -InstanceId $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region | Out-Null
 
     #Wait until the instance is running
-    Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'running' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region -Verbose
+    Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'running' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
     Write-Verbose "$(Get-Date) Azure Automation onboarding is running remotely. You should see your AWS VM in Azure Automation as a DSC Node soon."
 }
@@ -375,8 +381,8 @@ function Get-AzureAutomationResourceGroup {
 }
 
 # Gives an IAM instance profile access to an encryption key
-function Set-IAMInstanceProfileKeyAccess {
-    [CmdletBinding()]
+function Set-IAMInstanceProfileEncryptionKeyAccess {
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param(
         [Parameter(Mandatory = $true)]
         [string]$RoleArn,
@@ -411,13 +417,7 @@ function Set-IAMInstanceProfileKeyAccess {
 "@
 
     if (-not $KeyId) {
-        $keys = @()
-        $keys += Get-AwsEncryptionKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-        if (-not $keys -or $keys.Count -eq 0) {
-            throw "This AWS account does not have any AWS encryption keys."
-        }
-
-        $KeyId = $keys[0].KeyId
+        $KeyId = Get-AwsEncryptionKeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
     $keyPolicies = @()
@@ -431,7 +431,9 @@ function Set-IAMInstanceProfileKeyAccess {
 
     $modifiedKeyPolicy = $keyPolicy.Remove($keyPolicy.LastIndexOf(']'), $keyPolicy.Length - $keyPolicy.LastIndexOf(']')) + $keyPolicyInsert
 
-    AWSPowershell\Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    if ($PSCmdlet.ShouldProcess($KeyId)) {
+        AWSPowershell\Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    }
 }
 
 <#
@@ -469,13 +471,25 @@ function Set-IAMInstanceProfileKeyAccess {
     The name of an AWS credentials profile to use when running all AWS commands. The default value is 'default'.
 
     .EXAMPLE
-    Set-IAMInstanceProfileForRegistration -Name "InstanceProfileName"
+    # Create a valid IAM instance profile for a new instance
+    $instanceProfileName = 'MyInstanceProfile'
+    $instanceProfile = Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
+
+    .EXAMPLE
+    # Modify an existing IAM instance profile to be valid to register a new instance
+    $existingInstanceProfileName = 'MyExistingInstanceProfile'
+    Set-IAMInstanceProfileForRegistration -Name $existingInstanceProfileName
+
+    .EXAMPLE
+    # Modify an existing IAM instance profile to be valid to register an existing instance
+    $existingInstanceProfileName = 'MyExistingInstanceProfile'
+    Set-IAMInstanceProfileForRegistration -Name $existingInstanceProfileName -ExistingInstance
 
     .OUTPUTS
     Amazon.IdentityManagement.Model.InstanceProfile
 #>
 function Set-IAMInstanceProfileForRegistration {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param (
         [Parameter(Mandatory = $true)]
         [string]$Name,
@@ -575,21 +589,23 @@ function Set-IAMInstanceProfileForRegistration {
     }
 
     if ($ExistingInstance -and -not (Test-IAMInstanceProfileRunCommandPermission -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
-        Register-IAMRolePolicy -RoleName $role.RoleName -PolicyArn $managedRolePolicyArn -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        if ($PSCmdlet.ShouldProcess($role.RoleName)) {
+            Register-IAMRolePolicy -RoleName $role.RoleName -PolicyArn $managedRolePolicyArn -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        }
     }
 
     Write-Verbose "Retrieving updated IAM instance profile..." 
     $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     $role = AWSPowershell\Get-IAMRole -RoleName $RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | where { $_.Arn -eq $role.Arn })) {
+    while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | Microsoft.PowerShell.Core\Where-Object { $_.Arn -eq $role.Arn })) {
         Write-Verbose "IAM instance profile is still propogating. Waiting 5 seconds..."
         Start-Sleep -Seconds 5
         $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
     if (-not (Test-IAMInstanceProfileEncryptionKeyAccess -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
-        Set-IAMInstanceProfileKeyAccess -RoleArn $role.Arn -KeyId $KeyId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+        Set-IAMInstanceProfileEncryptionKeyAccess -RoleArn $role.Arn -KeyId $KeyId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
     }
 
     return $instanceProfile
@@ -639,6 +655,9 @@ function Set-IAMInstanceProfileForRegistration {
     .PARAMETER WmfVersion
     The version of WMF to install on your VM. Possible values are 4.0, 5.0, and latest.The default is latest.
 
+    .PARAMETER AwsEncryptionKeyId
+    The AWS encryption key id to use to encrypt the Azure Automation registration key.
+
     .PARAMETER AwsRegion
     The AWS region in which to run all AWS commands. You can also use Set-DefaultAWSRegion to set the default region for your session.
 
@@ -657,96 +676,137 @@ function Set-IAMInstanceProfileForRegistration {
     .PARAMETER New
     A switch parameter that indicates you would like to create and register a new EC2 instance. If you are creating a new instance, you must specify a valid IAM role and a valid security group for the instance to register successfully.
 
-    .PARAMETER {ImageId}
+    .PARAMETER ImageId
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
     If this parameter is not specified, the function will install the most recent version of the AWS image with the name 'WINDOWS_2012R2_BASE'.
     
-    .PARAMETER {AssociatePublicIp}
+    .PARAMETER AssociatePublicIp
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {MinCount}
+    .PARAMETER MinCount
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {MaxCount}
+    .PARAMETER MaxCount
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {KeyName}
+    .PARAMETER KeyName
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
-    You will not be able to connect to your new instance if you do not specify this parameter.
+    You may not be able to connect to your new instance if you do not specify this parameter.
 
-    .PARAMETER {SecurityGroup}
-    This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
-
-    .PARAMETER {SecurityGroupId}
+    .PARAMETER SecurityGroup
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {InstanceType}
+    .PARAMETER SecurityGroupId
+    This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
+
+    .PARAMETER InstanceType
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
     By default, this function will create t2.micro instances.
 
-    .PARAMETER {AvailabilityZone}
+    .PARAMETER AvailabilityZone
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {PlacementGroup}
+    .PARAMETER PlacementGroup
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {Tenancy}
+    .PARAMETER Tenancy
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {KernelId}
+    .PARAMETER KernelId
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {RamdiskId}
+    .PARAMETER RamdiskId
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {BlockDeviceMapping}
+    .PARAMETER BlockDeviceMapping
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {Monitoring_Enabled}
+    .PARAMETER Monitoring_Enabled
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {SubnetId}
+    .PARAMETER SubnetId
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {DisableApiTermination}
+    .PARAMETER DisableApiTermination
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {InstanceInitiatedShutdownBehavior}
+    .PARAMETER InstanceInitiatedShutdownBehavior
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {PrivateIpAddress}
+    .PARAMETER PrivateIpAddress
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {ClientToken}
+    .PARAMETER ClientToken
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {NetworkInterface}
+    .PARAMETER NetworkInterface
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {EbsOptimized}
+    .PARAMETER EbsOptimized
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {InstanceProfile_Arn}
+    .PARAMETER InstanceProfile_Arn
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {InstanceProfile_Name}
+    .PARAMETER InstanceProfile_Name
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {AdditionalInfo}
+    .PARAMETER AdditionalInfo
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
-    .PARAMETER {Force}
+    .PARAMETER Force
     This parameter is passed directly to the New-EC2Instance cmdlet. See help for New-EC2Instance for more information on this parameter.
 
     .EXAMPLE
-    Register-EC2Instance -AzureAutomationAccount 'AzureAutomationAccountName' -InstanceId 'i9567fhs3'
+    # Register a new instance
+    # Create a valid security group or supply the name of an exisitng one
+    $securityGroupName = 'MySecurityGroup'
+    New-EC2SecurityGroup -GroupName $securityGroupName -Description 'Security group for registration to Azure Automation'
+
+    # Create a valid IAM instance profile for a new instance
+    $instanceProfileName = 'MyInstanceProfile'
+    $instanceProfile = Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
+    # OR
+    # Test that an existing IAM instance profile is valid to register a new instance
+    Test-IAMInstanceProfileForRegistration -Name $instanceProfileName
+    # AND
+    # Modify an existing IAM instance profile to be valid to register a new instance
+    Set-IAMInstanceProfileForRegistration -Name $instanceProfileName
+
+    # Get the image id of the Amazon Machine Image (AMI) to use - By default the cmdlet will create a VM with the most recent version of 'WINDOWS_2012R2_BASE'
+    $imageName = 'WINDOWS_2012R2_BASE'
+    $imageId = $(Get-EC2ImageByName -Name $imageName).ImageId
+
+    # Choose an instance type - By default the cmdlet will create a t2.micro instance.
+    $instanceType = 't2.micro'
+
+    $keyPairName = 'MyKeyPair'
+    $azureAutomationAccountName = 'MyAzureAutomationAccount'
+
+    Register-EC2Instance `
+        -AzureAutomationAccount $azureAutomationAccountName `
+        -New `
+        -ImageId $imageId `
+        -KeyName $keyPairName `
+        -SecurityGroup $securityGroupName `
+        -InstanceType $instanceType `
+        -InstanceProfile_Name $instanceProfile.InstanceProfileName
 
     .EXAMPLE
-    Register-EC2Instance -AzureAutomationAccount 'AzureAutomationAccountName' -New -InstanceProfile_Name 'InstanceProfileWithKeyAccess' -SecurityGroup 'SecurityGroupWithOpenPorts'
+    # Register an existing instance
+    $azureAutomationAccountName = 'MyAzureAutomationAccount'
+    $existingInstanceId = 'MyExistingInstanceId'
+
+    Register-EC2Instance -AzureAutomationAccount $azureAutomationAccountName -InstanceId $existingInstanceId
 
     .LINK
     New-EC2Instance
     Test-EC2InstanceRegistration
+    Set-IAMInstanceProfileForRegistration
+    Test-IAMInstanceProfileForRegistration
+
+    .OUTPUTS
+    Amazon.EC2.Model.Reservation
 #>
 function Register-EC2Instance {
     [OutputType([Amazon.EC2.Model.Reservation])]
@@ -789,6 +849,9 @@ function Register-EC2Instance {
 
         [string]
         $WmfVersion = 'latest',
+
+        [string]
+        $AwsEncryptionKeyId,
 
         #--- AWS credentials parameters ---
         [string]
@@ -1009,10 +1072,10 @@ function Register-EC2Instance {
             -ConfigurationArguments $azureAutomationConfigArgs `
             -ProtectedConfigurationArguments $azureAutomationProtectedConfigArgs `
             -ExtensionVersion $DscBootstrapperVersion `
+            -KeyId $AwsEncryptionKeyId `
             -AccessKey $AwsAccessKey `
             -SecretKey $AwsSecretKey `
-            -Region $AwsRegion `
-            -Verbose
+            -Region $AwsRegion
 
         # Add user data parameter
         $PSBoundParameters.Add('UserData', $userData)
@@ -1050,6 +1113,7 @@ function Register-EC2Instance {
             $PSBoundParameters.Remove('AllowModuleOverwrite') | Out-Null
             $PSBoundParameters.Remove('ActionAfterReboot') | Out-Null
             $PSBoundParameters.Remove('DscBootstrapperVersion') | Out-Null
+            $PSBoundParameters.Remove('AwsEncryptionKeyId') | Out-Null
             $PSBoundParameters.Remove('New') | Out-Null
             $PSBoundParameters.Remove('AwsAccessKey') | Out-Null
             $PSBoundParameters.Remove('AwsSecretKey') | Out-Null
@@ -1089,8 +1153,7 @@ function Register-EC2Instance {
                     -UserData $userData `
                     -AccessKey $AwsAccessKey `
                     -SecretKey $AwsSecretKey `
-                    -Region $AwsRegion `
-                    -Verbose
+                    -Region $AwsRegion
             }
             else {
                 throw "There is no EC2 instance with the id $InstanceId."
@@ -1195,6 +1258,7 @@ function Test-IAMInstanceProfileRunCommandPermission {
 
 # Tests if an IAM profile has access to an AWS encryption key
 function Test-IAMInstanceProfileEncryptionKeyAccess {
+    [OutputType([System.Boolean])]
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -1206,9 +1270,11 @@ function Test-IAMInstanceProfileEncryptionKeyAccess {
         [string]$AwsSecretKey
     )
 
+    Write-Verbose "$(Get-Date) Checking for encryption key access..."
+
+    # Retrieve the ARNs of each of the instance's roles
     $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    # Check for Run Command permissions
     $instanceRoles = @()
     $instanceRoles += $instanceProfile.Roles
 
@@ -1218,15 +1284,17 @@ function Test-IAMInstanceProfileEncryptionKeyAccess {
         $instanceRoleArns += $instanceRole.Arn
     }
 
-    # Check for encryption key access
-    Write-Verbose "$(Get-Date) Checking for encryption key access..."
-    $keyAccessFound = $false
-
+    # Retrieve the AWS encryption keys
     Write-Verbose "$(Get-Date) Retrieving encryption keys..."
-    $keys = Get-AwsEncryptionKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+    $keys = AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-    Write-Verbose "$(Get-Date) Found encryption keys. Checking for key policy access permssions..."
+    if (-not $keys -or $keys.Count -lt 1) {
+        Write-Verbose "$(Get-Date) There are no AWS encryption keys available to this user."
+    }
+
+    # Check each key policy for permissions for the instance's role(s)
     foreach ($key in $keys) {
+        Write-Verbose "$(Get-Date) Checking key ($($key.KeyId)) for policy with role access permssions..."
         $keyPolicyNames = AWSPowershell\Get-KMSKeyPolicies -KeyId $key.KeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
         foreach ($keyPolicyName in $keyPolicyNames) {
             $keyPolicyString = AWSPowershell\Get-KMSKeyPolicy -KeyId $key.KeyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
@@ -1271,9 +1339,19 @@ function Test-IAMInstanceProfileEncryptionKeyAccess {
     The name of an AWS credentials profile to use when running all AWS commands. The default value is 'default'.
 
     .EXAMPLE
-    Test-IAMInstanceProfile -Name 'TestInstanceProfile'
+    # Test that an existing IAM instance profile is valid to register a new instance
+    Test-IAMInstanceProfileForRegistration -Name $instanceProfileName
+
+    .EXAMPLE
+    # Test that an existing IAM instance profile is valid to register an existing instance
+    $existingInstanceProfileName = 'MyExistingInstanceProfile'
+    Test-IAMInstanceProfileForRegistration -Name $existingInstanceProfileName -ExistingInstance
+
+    .OUTPUTS
+    System.Boolean
 #>
 function Test-IAMInstanceProfileForRegistration {
+    [OutputType([System.Boolean])]
     param (
         [Parameter(Mandatory = $true)]
         [string]$Name,
@@ -1391,10 +1469,15 @@ function Test-EC2InstanceRegistered {
     The name of an AWS credentials profile to use when running all AWS commands. The default value is 'default'.
 
     .EXAMPLE
-    Test-EC2InstanceRegistration -InstanceId 'i448ahfj'
+    # Test if the instance can be registered
+    $existingInstanceId = 'MyExistingInstanceId'
+    Test-EC2InstanceRegistration -InstanceId $existingInstanceId -Verbose
 
     .EXAMPLE
-    Test-EC2InstanceRegistration -InstanceId 'ajfjur39' -AzureAutomationAccount 'MyAutomationAccount'
+    # Test if the instance is registered
+    $azureAutomationAccountName = 'MyAzureAutomation'
+    $registeredInstanceId = 'MyRegisteredInstanceId'
+    Test-EC2InstanceRegistration -AzureAutomationAccount $azureAutomationAccountName -InstanceId $registeredInstanceId
 
     .INPUTS
     The instance id can be piped into this function.

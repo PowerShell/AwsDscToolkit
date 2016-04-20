@@ -58,7 +58,7 @@ $originalKeyPolicies = @{}
 $keyPolicyName = $testPrefix + 'KeyPolicy'
 
 function Set-IAMInstanceProfileKeyAccess {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param(
         [Parameter(Mandatory = $true)]
         [string]$RoleArn,
@@ -112,11 +112,13 @@ function Set-IAMInstanceProfileKeyAccess {
 
     $modifiedKeyPolicy = $keyPolicy.Remove($keyPolicy.LastIndexOf(']'), $keyPolicy.Length - $keyPolicy.LastIndexOf(']')) + $keyPolicyInsert
 
-    Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    if ($PSCmdlet.ShouldProcess($KeyId)) {
+        Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $modifiedKeyPolicy -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    }
 }
 
 function Reset-IAMInstanceProfileKeyAccess {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param (
         [string]$KeyId
     )
@@ -135,8 +137,10 @@ function Reset-IAMInstanceProfileKeyAccess {
         $keyPolicyName = $keyPolicies[0]
     }
 
-    #Reset the encryption key policy
-    Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $originalKeyPolicies[$KeyId] -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    # Reset the encryption key policy
+    if ($PSCmdlet.ShouldProcess($KeyId)) {
+        Write-KMSKeyPolicy -KeyId $KeyId -PolicyName $keyPolicyName -Policy $originalKeyPolicies[$KeyId] -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    }
 }
 
 function Remove-IAMInstanceProfileAndRole {
@@ -191,7 +195,7 @@ function Save-IAMInstanceProfileKeyAccess {
 }
 
 function New-IAMInstanceProfileForRegistrationInline {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param (
         [Parameter(Mandatory = $true)]
         [string]$InstanceProfileName,
@@ -294,8 +298,10 @@ function New-IAMInstanceProfileForRegistrationInline {
     Write-Verbose "Adding IAM role to IAM instance profile..." 
     Add-IAMRoleToInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
 
-    Write-Verbose "Writing IAM role policy..."    
-    AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    Write-Verbose "Writing IAM role policy..." 
+    if ($PSCmdlet.ShouldProcess($role.RoleName)) {
+        AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
+    }
 
     Write-Verbose "Waiting for 10 seconds while permissions propogate..."
     Start-Sleep -Seconds 10
@@ -304,7 +310,7 @@ function New-IAMInstanceProfileForRegistrationInline {
     $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     $role = Get-IAMRole -RoleName $RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | where { $_.Arn -eq $role.Arn })) {
+    while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | Where-Object { $_.Arn -eq $role.Arn })) {
         Write-Verbose "IAM instance profile needs more time. Waiting 5 seconds..."
         Start-Sleep -Seconds 5
         $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
@@ -556,12 +562,13 @@ $imageId = (Get-EC2ImageByName -Name $imageName -AccessKey $AwsAccessKey -Secret
 
 $testSecurityGroupName = $testPrefix + 'SecurityGroup'
 $testSecurityGroupDescription = 'Security group for AWS DSC Toolkit tests.'
-$testSecurityGroup = New-EC2SecurityGroup `
+New-EC2SecurityGroup `
     -GroupName $testSecurityGroupName `
     -Description $testSecurityGroupDescription `
     -AccessKey $AwsAccessKey `
     -SecretKey $AwsSecretKey `
-    -Region $AwsRegion
+    -Region $AwsRegion `
+| Out-Null
 
 try {
     Describe 'Test-EC2InstanceRegistration' {
@@ -644,35 +651,6 @@ try {
         $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
         try {
-            Context 'No encryption keys on account' {
-                Mock Get-AwsEncryptionKeys -ModuleName AwsDscToolkit -MockWith {
-                    return $null
-                }
-
-                It 'Should return NotReadyToRegister when no encryption keys available' {
-                    $instanceReservation = New-EC2Instance `
-                        -ImageId $imageId `
-                        -KeyName $KeyPair `
-                        -SecurityGroup $testSecurityGroupName `
-                        -InstanceType $instanceType `
-                        -InstanceProfile_Name $instanceProfile.InstanceProfileName `
-                        -AccessKey $AwsAccessKey `
-                        -SecretKey $AwsSecretKey `
-                        -Region $AwsRegion
-
-                    $instanceId = $instanceReservation.Instances[0].InstanceId
-
-                    try {
-                        $testResult = Test-EC2InstanceRegistration -InstanceId $instanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
-                        Assert-MockCalled Get-AwsEncryptionKeys -ModuleName AwsDscToolkit
-                        $testResult | Should Be ([EC2InstanceRegistrationStatus]::NotReadyToRegister)
-                    }
-                    finally {
-                        Stop-EC2Instance -Instance $instanceId -Terminate -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
-                    }
-                }
-            }
-
             It 'Should return NotReadyToRegister when instance role does not have access to an encryption key' {
                 $instanceReservation = New-EC2Instance `
                     -ImageId $imageId `
