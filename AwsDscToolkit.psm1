@@ -44,26 +44,60 @@ function ConvertFrom-StringToMemoryStream {
     return $memoryStream
 }
 
-# Retrieves the first AWS encryption key on the account
+# Retrieves the first AWS encryption key that the instance profile has access to
 function Get-AwsEncryptionKeyId {
     param (
+        [Parameter(Mandatory = $true)]
         [string]
-        $AccessKey,
+        $InstanceProfileName,
         [string]
-        $SecretKey,
+        $AwsAccessKey,
         [string]
-        $Region
+        $AwsSecretKey,
+        [string]
+        $AwsRegion
     )
-    $keys = @()
-    $keys += AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-    if (-not $keys -or $keys.Count -eq 0) {
-        throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key via the AWS console."
+    Write-Verbose "$(Get-Date) Checking for encryption key access..."
+
+    # Retrieve the ARNs of each of the instance's roles
+    $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    $instanceRoles = @()
+    $instanceRoles += $instanceProfile.Roles
+
+    $instanceRoleArns = @()
+
+    foreach ($instanceRole in $instanceRoles) {
+        $instanceRoleArns += $instanceRole.Arn
     }
 
-    $keyId = $keys[0].KeyId
+    # Retrieve the AWS encryption keys
+    Write-Verbose "$(Get-Date) Retrieving encryption keys..."
+    $keys = AWSPowershell\Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    return $keyId
+    if (-not $keys -or $keys.Count -lt 1) {
+        Write-Verbose "$(Get-Date) There are no AWS encryption keys available to this user."
+    }
+
+    # Check each key policy for permissions for the instance's role(s)
+    foreach ($key in $keys) {
+        Write-Verbose "$(Get-Date) Checking key ($($key.KeyId)) for policy with role access permssions..."
+        $keyPolicyNames = AWSPowershell\Get-KMSKeyPolicies -KeyId $key.KeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        foreach ($keyPolicyName in $keyPolicyNames) {
+            $keyPolicyString = AWSPowershell\Get-KMSKeyPolicy -KeyId $key.KeyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+            $keyPolicy = ConvertFrom-Json $keyPolicyString
+                   
+            foreach ($statement in $keyPolicy.Statement) {
+                if ($statement.Effect -eq 'Allow' -and $statement.Principal.AWS -and $instanceRoleArns -contains $statement.Principal.AWS) {
+                    Write-Verbose "$(Get-Date) Encryption key access found."
+                    return $key.KeyId
+                }
+            }
+        }
+    }
+
+    return $null
 }
 
 # Converts a hashtable of protected settings to an encryted base 64 string using the AWS Key Management Service
@@ -71,6 +105,7 @@ function ConvertTo-EncryptedProtectedSettingsString {
     [OutputType([string])]
     [CmdletBinding()]
     param(
+        [Parameter(Mandatory = $true)]
         [string]$KeyId,
         [Parameter(Mandatory = $true)]
 		[string]$AccessKey,
@@ -90,13 +125,8 @@ function ConvertTo-EncryptedProtectedSettingsString {
         #Convert JSON string to memory stream
         $protectedSettingsMemoryStream = ConvertFrom-StringToMemoryStream $protectedSettingsJson
 
-        #Get a key id
-        if (-not $KeyId) {
-            $KeyId = Get-AwsEncryptionKeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-        }
-
         #Encrypt memory stream
-        $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $keyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+        $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $KeyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
         #Convert response memory stream to base 64
         $encryptedProtectedSettings = ConvertTo-Base64FromMemoryStream $encryptedResponse.CiphertextBlob -Verbose
@@ -194,6 +224,7 @@ function Get-AwsDscUserData {
 		[Hashtable]$ProtectedConfigurationArguments,
 		[string]$ExtensionVersion = '0.1.0.0',
         [string]$WmfVersion = 'latest',
+        [Parameter(Mandatory = $true)]
         [string]$KeyId,
         [Parameter(Mandatory = $true)]
         [string]$AccessKey,
@@ -380,12 +411,44 @@ function Get-AzureAutomationResourceGroup {
     return $matchingAccounts[0].ResourceGroupName
 }
 
+# Retrieves the IAM instance profile attached to an EC2 instance
+function Get-IAMInstanceProfileForEC2Instance {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $InstanceId,
+        [string]
+        $AwsAccessKey,
+        [string]
+        $AwsSecretKey,
+        [string]
+        $AwsRegion
+    )
+    # Retrieve the instance by its ID
+    $instanceReservation = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    # Check that the instance has an IAM role
+    Write-Verbose "$(Get-Date) Retrieving the instance's IAM instance profile..." 
+    $iamProfile = $instanceReservation.Instances[0].IamInstanceProfile
+    
+    $allInstanceProfiles = AWSPowershell\Get-IAMInstanceProfiles -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+
+    foreach ($profile in $allInstanceProfiles) {
+        if ($profile.Arn -eq $iamProfile.Arn) {
+            return $profile
+        }
+    }
+
+    return $null
+}
+
 # Gives an IAM instance profile access to an encryption key
 function Set-IAMInstanceProfileEncryptionKeyAccess {
     [CmdletBinding(SupportsShouldProcess=$true)]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$RoleArn,
+        $InstanceProfile,
         [string]$KeyId,
 
         # AWS info
@@ -393,6 +456,8 @@ function Set-IAMInstanceProfileEncryptionKeyAccess {
         [string]$AwsAccessKey,
         [string]$AwsSecretKey
     )
+
+    $roleArn = $InstanceProfile.Roles[0].Arn
 
     #Give new custom instance profile access to encryption keys
     $keyPolicyInsert = @"
@@ -417,7 +482,14 @@ function Set-IAMInstanceProfileEncryptionKeyAccess {
 "@
 
     if (-not $KeyId) {
-        $KeyId = Get-AwsEncryptionKeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+        $keys = @()
+        $keys += AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+
+        if (-not $keys -or $keys.Count -eq 0) {
+            throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key."
+        }
+
+        $KeyId = $keys[0].KeyId
     }
 
     $keyPolicies = @()
@@ -604,8 +676,8 @@ function Set-IAMInstanceProfileForRegistration {
         $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
-    if (-not (Test-IAMInstanceProfileEncryptionKeyAccess -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
-        Set-IAMInstanceProfileEncryptionKeyAccess -RoleArn $role.Arn -KeyId $KeyId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+    if (-not (Get-AwsEncryptionKeyId -InstanceProfileName $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
+        Set-IAMInstanceProfileEncryptionKeyAccess -InstanceProfile $instanceProfile -KeyId $KeyId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
     }
 
     return $instanceProfile
@@ -964,29 +1036,6 @@ function Register-EC2Instance {
         ${Force}
     )
 
-    dynamicparam
-    {
-        $command = Get-Command New-EC2Instance -Module AWSPowerShell -CommandType Cmdlet
-
-        $dynamicParams = @($command.Parameters.GetEnumerator() | Microsoft.PowerShell.Core\Where-Object { $_.Value.IsDynamic })
-
-        if ($dynamicParams.Length -gt 0)
-        {
-            $paramDictionary = [Management.Automation.RuntimeDefinedParameterDictionary]::new()
-            foreach ($param in $dynamicParams)
-            {
-                $param = $param.Value
-
-                if(-not $MyInvocation.MyCommand.Parameters.ContainsKey($param.Name))
-                {
-                    $dynParam = [Management.Automation.RuntimeDefinedParameter]::new($param.Name, $param.ParameterType, $param.Attributes)
-                    $paramDictionary.Add($param.Name, $dynParam)
-                }
-            }
-            return $paramDictionary
-        }
-    }
-
     begin
     {
         $outBuffer = $null
@@ -1062,6 +1111,42 @@ function Register-EC2Instance {
         # Generate the user data to run the DSC boostrapper with the Azure Automation registration configuration
         if (-not $DscBootstrapperVersion) {
             $DscBootstrapperVersion = '0.1.0.0'
+        }
+
+        # Get the key ID to encrypt the registration key
+        if (-not $AwsEncryptionKeyId) {
+            if ($New) {
+                if ($InstanceProfile_Name) {
+                    $AwsEncryptionKeyId = Get-AwsEncryptionKeyId -InstanceProfileName $InstanceProfile_Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                }
+                elseif ($InstanceProfile_Arn) {
+                    $instanceProfileName = $null
+
+                    $instanceProfiles = AWSPowershell\Get-IAMInstanceProfiles -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+                    foreach ($instanceProfile in $instanceProfiles) {
+                        if ($instanceProfile.Arn -eq $InstanceProfile_Arn) { 
+                            $instanceProfileName = $instanceProfile.InstanceProfileName
+                        }
+                    }
+
+                    if (-not $instanceProfileName) {
+                        throw "Cannot find the instance profile with ARN $InstanceProfile_Arn"
+                    }
+
+                    $AwsEncryptionKeyId = Get-AwsEncryptionKeyId -InstanceProfileName $instanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                }
+                else {
+                    throw "You must provide an InstanceProfile_Name or InstanceProfile_Arn to give your new instance access to an encryption key."
+                }
+            }
+            else {
+                $instanceProfile = Get-IAMInstanceProfileForEC2Instance -InstanceId $InstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+                $AwsEncryptionKeyId = Get-AwsEncryptionKeyId -InstanceProfileName $instanceProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+            }
+        }
+
+        if (-not $AwsEncryptionKeyId) {
+            throw "The instance profile provided does not have access to any AWS encryption keys."
         }
 
         Write-Verbose "$(Get-Date) Creating Azure Automation registration encoded user data..."
@@ -1256,62 +1341,6 @@ function Test-IAMInstanceProfileRunCommandPermission {
     return ($attachedPolicyAccess -or $inlinePolicyAccess)
 }
 
-# Tests if an IAM profile has access to an AWS encryption key
-function Test-IAMInstanceProfileEncryptionKeyAccess {
-    [OutputType([System.Boolean])]
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-
-        # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey
-    )
-
-    Write-Verbose "$(Get-Date) Checking for encryption key access..."
-
-    # Retrieve the ARNs of each of the instance's roles
-    $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    $instanceRoles = @()
-    $instanceRoles += $instanceProfile.Roles
-
-    $instanceRoleArns = @()
-
-    foreach ($instanceRole in $instanceRoles) {
-        $instanceRoleArns += $instanceRole.Arn
-    }
-
-    # Retrieve the AWS encryption keys
-    Write-Verbose "$(Get-Date) Retrieving encryption keys..."
-    $keys = AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
-
-    if (-not $keys -or $keys.Count -lt 1) {
-        Write-Verbose "$(Get-Date) There are no AWS encryption keys available to this user."
-    }
-
-    # Check each key policy for permissions for the instance's role(s)
-    foreach ($key in $keys) {
-        Write-Verbose "$(Get-Date) Checking key ($($key.KeyId)) for policy with role access permssions..."
-        $keyPolicyNames = AWSPowershell\Get-KMSKeyPolicies -KeyId $key.KeyId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-        foreach ($keyPolicyName in $keyPolicyNames) {
-            $keyPolicyString = AWSPowershell\Get-KMSKeyPolicy -KeyId $key.KeyId -PolicyName $keyPolicyName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-            $keyPolicy = ConvertFrom-Json $keyPolicyString
-                   
-            foreach ($statement in $keyPolicy.Statement) {
-                if ($statement.Effect -eq 'Allow' -and $statement.Principal.AWS -and $instanceRoleArns -contains $statement.Principal.AWS) {
-                    Write-Verbose "$(Get-Date) Encryption key access found."
-                    return $true
-                }
-            }
-        }
-    }
-
-    return $false
-}
-
 <#
     .SYNOPSIS
     Tests whether an IAM Instance Profile has the correct permissions to allow the EC2 instance assigned to it to register with Azure Automation.
@@ -1373,7 +1402,7 @@ function Test-IAMInstanceProfileForRegistration {
         $runCommandPermission = Test-IAMInstanceProfileRunCommandPermission -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
     }
         
-    $encryptionKeyAccess = Test-IAMInstanceProfileEncryptionKeyAccess -Name $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
+    $encryptionKeyAccess = Get-AwsEncryptionKeyId -InstanceProfileName $Name -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
 
     return ($encryptionKeyAccess -and (-not $ExistingInstance -or $runCommandPermission))
 }
@@ -1534,27 +1563,13 @@ function Test-EC2InstanceRegistration {
         Write-Verbose "$(Get-Date) Azure Automation account information missing. Skipping check for instance registration."
     }
 
-    # Retrieve the instance by its ID
-    $instanceReservation = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-
-    # Check that the instance has an IAM role
-    Write-Verbose "$(Get-Date) Retrieving the instance's IAM role..." 
-    $iamProfile = $instanceReservation.Instances[0].IamInstanceProfile
-    
-    $allInstanceProfiles = AWSPowershell\Get-IAMInstanceProfiles -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
-    $matchingProfile = $null
-    
-    foreach ($profile in $allInstanceProfiles) {
-        if ($profile.Arn -eq $iamProfile.Arn) {
-            $matchingProfile = $profile
-            break
-        }
-    }
+    # Retrieve the IAM instance profile for the instance
+    $matchingProfile = Get-IAMInstanceProfileForEC2Instance -InstanceId $InstanceId -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion
     
     # If the instance has a role, check that the role has the correct permissions to use Run Command and has access the an AWS encryption key
     if ($matchingProfile) {
         # Check for encryption key access
-        if (-not (Test-IAMInstanceProfileEncryptionKeyAccess -Name $matchingProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
+        if (-not (Get-AwsEncryptionKeyId -InstanceProfileName $matchingProfile.InstanceProfileName -AwsAccessKey $AwsAccessKey -AwsSecretKey $AwsSecretKey -AwsRegion $AwsRegion)) {
             Write-Verbose "This instance does not have access to an AWS encryption key."
             return [EC2InstanceRegistrationStatus]::NotReadyToRegister
         }
@@ -1566,7 +1581,7 @@ function Test-EC2InstanceRegistration {
         }
     }
     else {
-        Write-Verbose "$(Get-Date) This instance does not have an IAM Role. It cannot be registered."
+        Write-Verbose "$(Get-Date) This instance does not have an IAM instance profile. It cannot be registered."
         return [EC2InstanceRegistrationStatus]::CannotRegister
     }
     

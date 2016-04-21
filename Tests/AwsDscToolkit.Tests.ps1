@@ -173,7 +173,7 @@ function Remove-IAMInstanceProfileAndRole {
 function Save-IAMInstanceProfileKeyAccess {
     param ()
     $keys = @()
-    $keys += Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+    $keys += AWSPowershell\Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     if (-not $keys -or $keys.Count -eq 0) {
         throw "This AWS account does not have any AWS encryption keys."
     }
@@ -558,11 +558,11 @@ Describe 'IAMInstanceProfileForRegistration' {
 $instanceType = 't2.micro'
 
 $imageName = 'WINDOWS_2012R2_BASE'
-$imageId = (Get-EC2ImageByName -Name $imageName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion).ImageId
+$imageId = (AWSPowershell\Get-EC2ImageByName -Name $imageName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion).ImageId
 
 $testSecurityGroupName = $testPrefix + 'SecurityGroup'
 $testSecurityGroupDescription = 'Security group for AWS DSC Toolkit tests.'
-New-EC2SecurityGroup `
+AWSPowershell\New-EC2SecurityGroup `
     -GroupName $testSecurityGroupName `
     -Description $testSecurityGroupDescription `
     -AccessKey $AwsAccessKey `
