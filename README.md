@@ -8,6 +8,7 @@ It is provided as is and is not supported through any Microsoft support program 
 ### Unreleased
 - Refined depedency on AzureRM module. Module manifest now only specified AzureRM.Automation and AzureRM.Profile.
 - Removed KeyPair parameter from tests.
+- Added ExtensionVersion parameter to tests.
 
 ### 0.3.0.0
 - Fixed variable typo for AWS credential and region in Set-IAMInstanceProfileForRegistration.
