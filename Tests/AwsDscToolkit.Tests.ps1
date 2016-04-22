@@ -7,8 +7,6 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$AzureAutomationAccount,
     [string]$AzureAutomationResourceGroup,
-    [Parameter(Mandatory = $true)]
-    [string]$KeyPair,
     [string]$AwsRegion = 'us-west-2'
 )
 
@@ -602,7 +600,6 @@ try {
         It 'Should return CannotRegister when instance does not have an IAM role' {
             $instanceReservation = New-EC2Instance `
                 -ImageId $imageId `
-                -KeyName $KeyPair `
                 -SecurityGroup $testSecurityGroupName `
                 -InstanceType $instanceType `
                 -AccessKey $AwsAccessKey `
@@ -654,7 +651,6 @@ try {
             It 'Should return NotReadyToRegister when instance role does not have access to an encryption key' {
                 $instanceReservation = New-EC2Instance `
                     -ImageId $imageId `
-                    -KeyName $KeyPair `
                     -SecurityGroup $testSecurityGroupName `
                     -InstanceType $instanceType `
                     -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -686,7 +682,6 @@ try {
                 It 'Should return NotReadyToRegister when instance does not have the correct IAM role permissions to use Run Command' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -717,7 +712,6 @@ try {
                 It 'Should return ReadyToRegister for instance with AWS managed role policy' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -753,7 +747,6 @@ try {
                 try {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $inlineInstanceProfile.InstanceProfileName `
@@ -831,7 +824,6 @@ try {
                         -AzureAutomationAccount $AzureAutomationAccount `
                         -New `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -876,7 +868,6 @@ try {
                 It 'Should register an existing instance' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -921,7 +912,6 @@ try {
                 It 'Should be able to pipe between Register-EC2Instance and Test-EC2InstanceRegistration' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
