@@ -6,7 +6,7 @@ It is provided as is and is not supported through any Microsoft support program 
 ## Releases
 
 ### Unreleased
-- Refined depedency on AzureRM module. Module manifest now only specified AzureRM.Automation and AzureRM.Profile.
+- Refined depedency on AzureRM module. Module manifest now only specifies AzureRM.Automation and AzureRM.Profile as required modules.
 - Removed KeyPair parameter from tests.
 - Added ExtensionVersion parameter to tests.
 
