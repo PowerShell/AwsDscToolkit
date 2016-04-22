@@ -1,7 +1,4 @@
-﻿Import-Module AWSPowershell
-Import-Module AzureRM
-
-if (-not ([System.Management.Automation.PSTypeName]'EC2InstanceRegistrationStatus').Type) {
+﻿if (-not ([System.Management.Automation.PSTypeName]'EC2InstanceRegistrationStatus').Type) {
     Add-Type -TypeDefinition @"
        public enum EC2InstanceRegistrationStatus
        {
@@ -483,7 +480,7 @@ function Set-IAMInstanceProfileEncryptionKeyAccess {
 
     if (-not $KeyId) {
         $keys = @()
-        $keys += AWSPowershell\Get-KMSKeys -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
+        $keys += AWSPowershell\Get-KMSKeys -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
         if (-not $keys -or $keys.Count -eq 0) {
             throw "There are no encryption keys available to encrypt the Azure Automation registration key. Please create an encryption key."
