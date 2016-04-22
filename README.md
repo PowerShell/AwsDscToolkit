@@ -5,14 +5,18 @@ It is provided as is and is not supported through any Microsoft support program 
 
 ## Releases
 
+### Unreleased
+- Refined depedency on AzureRM module. Module manifest now only specified AzureRM.Automation and AzureRM.Profile.
+- Removed KeyPair parameter from tests.
+
 ### 0.3.0.0
-- Fixed variable typo for AWS credential and region in Set-IAMInstanceProfileForRegistration
+- Fixed variable typo for AWS credential and region in Set-IAMInstanceProfileForRegistration.
 
 ### 0.2.0.0
 - Modified encryption key selection. Register-EC2Instance will now select the first key that the provided instance profile has access to rather than just the first key available.
 
 ### 0.1.0.0
-- Initial release
+- Initial release.
 
 ## Installation
 The AWS DSC Toolkit is available on the [PowerShell Gallery](https://www.powershellgallery.com/packages/AwsDscToolkit).  
