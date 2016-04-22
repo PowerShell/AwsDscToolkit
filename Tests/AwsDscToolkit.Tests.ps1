@@ -7,7 +7,8 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$AzureAutomationAccount,
     [string]$AzureAutomationResourceGroup,
-    [string]$AwsRegion = 'us-west-2'
+    [string]$AwsRegion = 'us-west-2',
+    [string]$ExtensionVersion = '0.1.0.0'
 )
 
 $ErrorActionPreference = 'stop'
@@ -370,6 +371,8 @@ function Invoke-WaitForEC2InstanceState {
         Start-Sleep -Seconds 10
         $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     }
+
+    Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name)."
 }
 
 function Invoke-WaitForEC2InstanceStatus {
@@ -385,10 +388,12 @@ function Invoke-WaitForEC2InstanceStatus {
 
     # Wait until the instance has the desired status
     while ($instanceStatus.Status.Status.Value -ne $DesiredStatus) {
-        Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value). Waiting for 10 seconds..."
-        Start-Sleep -Seconds 10
+        Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value). Waiting for 30 seconds..."
+        Start-Sleep -Seconds 30
         $instanceStatus = AWSPowershell\Get-EC2InstanceStatus $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
+
+    Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value)."
 }
 
 function Invoke-WaitForEC2InstanceRegistered {
@@ -403,8 +408,8 @@ function Invoke-WaitForEC2InstanceRegistered {
     $runningTime = (Get-Date) - (Get-Date)
 
     while ($status -ne [EC2InstanceRegistrationStatus]::Registered -and $runningTime.Minutes -lt $TimeoutMins) {
-        Write-Verbose "$(Get-Date) Registration not found. Waiting 10 seconds..."
-        Start-Sleep -Seconds 10
+        Write-Verbose "$(Get-Date) Registration not found. Waiting 30 seconds..."
+        Start-Sleep -Seconds 30
             
         $status = Test-EC2InstanceRegistration `
             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
@@ -827,6 +832,7 @@ try {
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -DscBootstrapperVersion $ExtensionVersion `
                         -AwsAccessKey $AwsAccessKey `
                         -AwsSecretKey $AwsSecretKey `
                         -AwsRegion $AwsRegion
@@ -837,7 +843,7 @@ try {
                         Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
                         Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
@@ -885,11 +891,12 @@ try {
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
                             -AzureAutomationAccount $AzureAutomationAccount `
                             -InstanceId $instanceId `
+                            -DscBootstrapperVersion $ExtensionVersion `
                             -AwsAccessKey $AwsAccessKey `
                             -AwsSecretKey $AwsSecretKey `
                             -AwsRegion $AwsRegion
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
@@ -929,6 +936,7 @@ try {
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
                             -AzureAutomationAccount $AzureAutomationAccount `
                             -InstanceId $instanceId `
+                            -DscBootstrapperVersion $ExtensionVersion `
                             -AwsAccessKey $AwsAccessKey `
                             -AwsSecretKey $AwsSecretKey `
                             -AwsRegion $AwsRegion `
@@ -940,7 +948,7 @@ try {
                             -AwsRegion $AwsRegion `
                         | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
