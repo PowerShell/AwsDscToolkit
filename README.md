@@ -3,6 +3,10 @@
 This module is currently in preview.  
 It is provided as is and is not supported through any Microsoft support program or service.
 
+## Description
+This module allows you to register AWS EC2 instances as DSC Nodes in Azure Automation.
+You can then control your EC2 instances in Azure Automation using PowerShell DSC configurations.
+
 ## Releases
 
 ### Unreleased
