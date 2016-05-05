@@ -15,11 +15,10 @@ function ConvertTo-Base64FromMemoryStream {
     [OutputType([string])]
     [CmdletBinding()]
     param(
-        [parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true)]
         [System.IO.MemoryStream]$InputStream
     )
 
-    #$streamReader = New-Object System.IO.StreamReader($InputStream)
     $InputStream.Position = 0
     $base64Output = [System.Convert]::ToBase64String($InputStream.ToArray())
     return $base64Output
@@ -30,7 +29,7 @@ function ConvertFrom-StringToMemoryStream {
     [OutputType([System.IO.MemoryStream])]
     [CmdletBinding()]
     param(
-        [parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true)]
         [string]$InputString
     )
 
@@ -47,10 +46,16 @@ function Get-AwsEncryptionKeyId {
         [Parameter(Mandatory = $true)]
         [string]
         $InstanceProfileName,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsAccessKey,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsSecretKey,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsRegion
     )
@@ -103,29 +108,38 @@ function ConvertTo-EncryptedProtectedSettingsString {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$KeyId,
+        [string]
+        $KeyId,
+
         [Parameter(Mandatory = $true)]
-		[string]$AccessKey,
+		[string]
+        $AccessKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$SecretKey,
+        [string]
+        $SecretKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$Region,
-        [Hashtable]$ProtectedSettings
+        [string]
+        $Region,
+
+        [Hashtable]
+        $ProtectedSettings
     )
 
     $encryptedProtectedSettings = $null
 
     if ($ProtectedSettings) {
-        #Convert protected settings to JSON string
+        # Convert protected settings to JSON string
         $protectedSettingsJson = ConvertTo-Json $ProtectedSettings
 
-        #Convert JSON string to memory stream
+        # Convert JSON string to memory stream
         $protectedSettingsMemoryStream = ConvertFrom-StringToMemoryStream $protectedSettingsJson
 
-        #Encrypt memory stream
+        # Encrypt memory stream
         $encryptedResponse = AWSPowershell\Invoke-KMSEncrypt -Plaintext $protectedSettingsMemoryStream -KeyId $KeyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-        #Convert response memory stream to base 64
+        # Convert response memory stream to base 64
         $encryptedProtectedSettings = ConvertTo-Base64FromMemoryStream $encryptedResponse.CiphertextBlob -Verbose
     }
 
@@ -137,28 +151,29 @@ function ConvertTo-ConfigArgStringFromHashtable {
     [OutputType([string])]
 	[CmdletBinding()]
 	param (
-		[Hashtable]$Hashtable
+		[Hashtable]
+        $Hashtable
 	)
 
     if (-not $Hashtable) {
         return '@{}'
     }
 
-    #Set up the beginning of the hashtable
+    # Set up the beginning of the hashtable
 	$hashtableString = '@{'
 
-    #Process the hashtable arguments
+    # Process the hashtable arguments
 	foreach ($key in $Hashtable.Keys) {
 		if ($Hashtable[$key].GetType() -ieq "".GetType()) {
-            #If the argument is a string, put single quotes around it
+            # If the argument is a string, put single quotes around it
 			$hashtableString += "$key = '$($Hashtable[$key])';"
 		}
         elseif ($Hashtable[$key].GetType() -ieq @{}.GetType()) {
-            #If the argument is a hashtable, recurse to convert that hashtable to a string as well
+            # If the argument is a hashtable, recurse to convert that hashtable to a string as well
             $hashtableString += "$key = $(ConvertTo-ConfigArgStringFromHashtable $Hashtable[$key]);"
         }
         elseif ($Hashtable[$key].GetType() -ieq $true.GetType()) {
-            #If the argument is a boolean, convert it to 1 or 0
+            # If the argument is a boolean, convert it to 1 or 0
             if ($Hashtable[$key]) {
                 $hashtableString += "$key = 1;"
             }
@@ -167,12 +182,12 @@ function ConvertTo-ConfigArgStringFromHashtable {
             }
         }
 		else {
-            #Otherwise, leave the argument as is
+            # Otherwise, leave the argument as is
 			$hashtableString += "$key = $($Hashtable[$key]);"
 		}
 	}
 
-    #Set up the end of the hashtable
+    # Set up the end of the hashtable
 	$hashtableString = $hashtableString.TrimEnd(';') + '}'
 
     return $hashtableString
@@ -183,20 +198,29 @@ function Invoke-WaitForEC2InstanceState {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$InstanceId,
+        [string]
+        $InstanceId,
+
         [Parameter(Mandatory = $true)]
-        [string]$DesiredState,
+        [string]
+        $DesiredState,
+
         [Parameter(Mandatory = $true)]
-        [string]$AccessKey,
+        [string]
+        $AccessKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$SecretKey,
+        [string]
+        $SecretKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$Region
+        [string]
+        $Region
     )
 
     $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-    #Wait until the instance is in the desired state
+    # Wait until the instance is in the desired state
     while ($instance.RunningInstance.State.Name -ne $DesiredState) {
         Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
         Start-Sleep -Seconds 10
@@ -209,53 +233,79 @@ function Get-AwsDscUserData {
     [OutputType([string])]
     [CmdletBinding()]
     param (
-		[Parameter(ParameterSetName='ConfigurationSpecified', Mandatory=$true)]
-		[string]$ConfigurationUrl,
-		[Parameter(ParameterSetName='ConfigurationSpecified', Mandatory=$true)]
-		[string]$ConfigurationScript,
-		[Parameter(ParameterSetName='ConfigurationSpecified', Mandatory=$true)]
-		[string]$ConfigurationFunction,
-		[Parameter(ParameterSetName='ConfigurationSpecified')]
-		[Hashtable]$ConfigurationArguments,
-		[Parameter(ParameterSetName='ConfigurationSpecified')]
-		[Hashtable]$ProtectedConfigurationArguments,
-		[string]$ExtensionVersion = '0.1.0.0',
-        [string]$WmfVersion = 'latest',
+		[Parameter(Mandatory = $true)]
+		[string]
+        $ConfigurationUrl,
+
+		[Parameter(Mandatory = $true)]
+		[string]
+        $ConfigurationScript,
+
+		[Parameter(Mandatory = $true)]
+		[string]
+        $ConfigurationFunction,
+
         [Parameter(Mandatory = $true)]
-        [string]$KeyId,
+        [string]
+        $KeyId,
+
         [Parameter(Mandatory = $true)]
-        [string]$AccessKey,
+        [string]
+        $AccessKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$SecretKey,
+        [string]
+        $SecretKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$Region
+        [string]
+        $Region,
+
+		[Hashtable]
+        $ConfigurationArguments,
+
+		[Hashtable]
+        $ProtectedConfigurationArguments,
+
+		[string]
+        $ExtensionVersion = '0.1.0.0',
+
+        [string]
+        $WmfVersion = 'latest',
+
+        [ValidateParameterSet('Enable', 'Disable', $null)]
+        [string]
+        $DataCollection
     )
+
     Write-Verbose "$(Get-Date) Generating user data..."
 
-    #AWS Bootstrapper download info
+    # AWS Bootstrapper download info
 	$extensionDownloadUrl = 'https://raw.githubusercontent.com/PowerShell/AWSBootStrapper/master/AWSDSCBootstrapper.ps1'
 	$extensionFileLocation = 'C:\AWSDSCBootstrapper.ps1'
 
-    #Convert public arguments to a string so that the AWS agent will process the command correctly
+    # Convert public arguments to a string so that the AWS agent will process the command correctly
 	$configurationArgumentsString = ConvertTo-ConfigArgStringFromHashtable $ConfigurationArguments
 
-    #Configure and encrypt protected arguments
+    # Configure and encrypt protected arguments
     $protectedSettingsContainer = @{ configurationArguments = $ProtectedConfigurationArguments }
     $encryptedProtectedArguments = ConvertTo-EncryptedProtectedSettingsString -ProtectedSettings $protectedSettingsContainer -KeyId $KeyId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-    #Create the user data with given config and arguments
+    # Create the user data with given config and arguments
     Write-Verbose "$(Get-Date) Creating user data..."
-    $userData = @"
+
+        $userData = @"
 <powershell>
 
 (New-Object System.Net.WebClient).DownloadFile('$extensionDownloadUrl', '$extensionFileLocation')
-powershell -ExecutionPolicy RemoteSigned -Command "& {$extensionFileLocation -WMFVersion $WmfVersion -ConfigurationURL '$ConfigurationUrl' -ConfigurationScript '$ConfigurationScript' -ConfigurationFunction '$ConfigurationFunction' -ConfigurationArguments $configurationArgumentsString -EncryptedProtectedArguments '$encryptedProtectedArguments' -ExtensionVersion '$ExtensionVersion'}"
+powershell -ExecutionPolicy RemoteSigned -Command "& {$extensionFileLocation -WMFVersion $WmfVersion -ConfigurationURL '$ConfigurationUrl' -ConfigurationScript '$ConfigurationScript' -ConfigurationFunction '$ConfigurationFunction' -ConfigurationArguments $configurationArgumentsString -EncryptedProtectedArguments '$encryptedProtectedArguments' -ExtensionVersion '$ExtensionVersion' -DataCollection '$DataCollection'}"
 
 </powershell>
 <persist>true</persist>
 <runAsLocalSystem>false</runAsLocalSystem>
 "@
-    #Convert user data to base 64
+
+    # Convert user data to base 64
     Write-Verbose "$(Get-Date) Encoding user data..."
     $userDataBase64Encoded = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($userData))
 
@@ -278,7 +328,9 @@ function Test-AzureRmCredential {
 # Tests whether or not AWS credentials are defined. 
 function Test-AwsCredential {
     param (
-        [string]$AwsProfile
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsProfile
     )
 
     # Check for AWS credentials
@@ -293,7 +345,8 @@ function Test-AwsCredential {
 # If a region is provided, sets the AWS default region. Otherwise, checks if the AWS default region has already been set.
 function Test-AwsRegion {
     param (
-        [string]$AwsRegion
+        [string]
+        $AwsRegion
     )
 
     # Check for AWS region
@@ -307,15 +360,24 @@ function Invoke-UserDataOnEC2Instance {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$InstanceId,
+        [string]
+        $InstanceId,
+
 		[Parameter(Mandatory = $true)]
-        [string]$UserData,
+        [string]
+        $UserData,
+
         [Parameter(Mandatory = $true)]
-        [string]$AccessKey,
+        [string]
+        $AccessKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$SecretKey,
+        [string]
+        $SecretKey,
+
         [Parameter(Mandatory = $true)]
-        [string]$Region
+        [string]
+        $Region
     )
 
     Write-Verbose "$(Get-Date) Running command to set persist flag for user data..."
@@ -350,7 +412,7 @@ $xml.Save($EC2SettingsFile)
         -SecretKey $SecretKey `
         -Region $Region
 
-    #Wait until the command has succeeded
+    # Wait until the command has succeeded
     while ($runPSCommand.Status -ne "Success") {
         Write-Verbose "$(Get-Date) Command status is $($runPSCommand.Status). Waiting for 10 seconds..."
         Start-Sleep -Seconds 10
@@ -361,22 +423,22 @@ $xml.Save($EC2SettingsFile)
         }
     }
 
-    #Stop the instance
+    # Stop the instance
     Write-Verbose "$(Get-Date) Stopping instance..."
     AWSPowershell\Stop-EC2Instance -Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region | Out-Null
 
-    #Wait until the instance stops
+    # Wait until the instance stops
     Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'stopped' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     
-    #Set the user data
+    # Set the user data
     Write-Verbose "$(Get-Date) Editting user data..."
     AWSPowershell\Edit-EC2InstanceAttribute -InstanceId $InstanceId -UserData $UserData -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
-    #Start the instance again
+    # Start the instance again
     Write-Verbose "$(Get-Date) Starting instance..."
     AWSPowershell\Start-EC2Instance -InstanceId $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region | Out-Null
 
-    #Wait until the instance is running
+    # Wait until the instance is running
     Invoke-WaitForEC2InstanceState -InstanceId $InstanceId -DesiredState 'running' -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
 
     Write-Verbose "$(Get-Date) Azure Automation onboarding is running remotely. You should see your AWS VM in Azure Automation as a DSC Node soon."
@@ -384,8 +446,10 @@ $xml.Save($EC2SettingsFile)
 
 # Retrieves the Azure Automation resource group for an Azure Automation account
 function Get-AzureAutomationResourceGroup {
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
+        [string]
         $AzureAutomationAccountName
     )
     
@@ -415,10 +479,16 @@ function Get-IAMInstanceProfileForEC2Instance {
         [Parameter(Mandatory = $true)]
         [string]
         $InstanceId,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsAccessKey,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsSecretKey,
+
+        [Parameter(Mandatory = $true)]
         [string]
         $AwsRegion
     )
@@ -442,21 +512,30 @@ function Get-IAMInstanceProfileForEC2Instance {
 
 # Gives an IAM instance profile access to an encryption key
 function Set-IAMInstanceProfileEncryptionKeyAccess {
-    [CmdletBinding(SupportsShouldProcess=$true)]
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
         $InstanceProfile,
-        [string]$KeyId,
 
-        # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsRegion,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsAccessKey,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsSecretKey,
+
+        [string]
+        $KeyId
     )
 
     $roleArn = $InstanceProfile.Roles[0].Arn
 
-    #Give new custom instance profile access to encryption keys
+    # Give new custom instance profile access to encryption keys
     $keyPolicyInsert = @"
 ,
     {
@@ -727,6 +806,10 @@ function Set-IAMInstanceProfileForRegistration {
     .PARAMETER AwsEncryptionKeyId
     The AWS encryption key id to use to encrypt the Azure Automation registration key.
 
+    .PARAMETER DataCollection
+    A boolean indicating whether to enable or disable telemetry sent to Microsoft. The only possible values are 'Enable' and 'Disable'.
+    All telemetry is currently disabled whether this parameter is specified as 'Enable' or not.
+
     .PARAMETER AwsRegion
     The AWS region in which to run all AWS commands. You can also use Set-DefaultAWSRegion to set the default region for your session.
 
@@ -921,6 +1004,10 @@ function Register-EC2Instance {
 
         [string]
         $AwsEncryptionKeyId,
+
+        [ValidateSet('Enable', 'Disable')]
+        [string]
+        $DataCollection,
 
         #--- AWS credentials parameters ---
         [string]
@@ -1154,6 +1241,7 @@ function Register-EC2Instance {
             -ConfigurationArguments $azureAutomationConfigArgs `
             -ProtectedConfigurationArguments $azureAutomationProtectedConfigArgs `
             -ExtensionVersion $DscBootstrapperVersion `
+            -DataCollection $DataCollection `
             -KeyId $AwsEncryptionKeyId `
             -AccessKey $AwsAccessKey `
             -SecretKey $AwsSecretKey `
@@ -1255,14 +1343,25 @@ function Register-EC2Instance {
 
 # Tests if an IAM instance profile has permission to use Run Command
 function Test-IAMInstanceProfileRunCommandPermission {
+    [OutputType([System.Boolean])]
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [string]$Name,
+        [string]
+        $Name,
 
         # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsRegion,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsAccessKey,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsSecretKey
     )
 
     $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
@@ -1378,17 +1477,28 @@ function Test-IAMInstanceProfileRunCommandPermission {
 #>
 function Test-IAMInstanceProfileForRegistration {
     [OutputType([System.Boolean])]
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [string]$Name,
-        [switch]$ExistingInstance,
+        [string]
+        $Name,
+
+        [switch]
+        $ExistingInstance,
 
         # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey,
+        [string]
+        $AwsRegion,
+
+        [string]
+        $AwsAccessKey,
+
+        [string]
+        $AwsSecretKey,
+
         [ValidateNotNullOrEmpty()]
-        [string]$AwsProfile = 'default'
+        [string]
+        $AwsProfile = 'default'
     )
 
     $instanceProfile = AWSPowershell\Get-IAMInstanceProfile -InstanceProfileName $Name -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
@@ -1406,19 +1516,34 @@ function Test-IAMInstanceProfileForRegistration {
 
 # Tests if an EC2 instance is registered with Azure Automation
 function Test-EC2InstanceRegistered {
+    [OutputType([System.Boolean])]
+    [CmdletBinding()]
     param (
         # Required parameters
         [Parameter(Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true, Mandatory = $true)]
-        [string]$InstanceId,
-
-        # Azure info
-        [string]$AzureAutomationAccount,
-        [string]$AzureAutomationResourceGroup,
+        [string]
+        $InstanceId,
 
         # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsRegion,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsAccessKey,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AwsSecretKey,
+
+        # Azure info
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AzureAutomationAccount,
+
+        [string]
+        $AzureAutomationResourceGroup
     )
 
     #Test Azure credentials
@@ -1448,6 +1573,7 @@ function Test-EC2InstanceRegistered {
             return $true
         }
     }
+
     Write-Verbose "$(Get-Date) Instance is not registered."
     return $false
 }
@@ -1520,15 +1646,25 @@ function Test-EC2InstanceRegistration {
         [string]$InstanceId,
 
         # Azure info
-        [string]$AzureAutomationAccount,
-        [string]$AzureAutomationResourceGroup,
+        [string]
+        $AzureAutomationAccount,
+
+        [string]
+        $AzureAutomationResourceGroup,
 
         # AWS info
-        [string]$AwsRegion,
-        [string]$AwsAccessKey,
-        [string]$AwsSecretKey,
+        [string]
+        $AwsRegion,
+
+        [string]
+        $AwsAccessKey,
+
+        [string]
+        $AwsSecretKey,
+
         [ValidateNotNullOrEmpty()]
-        [string]$AwsProfile = 'default'
+        [string]
+        $AwsProfile = 'default'
     )
 
     # Test for AWS credentials
