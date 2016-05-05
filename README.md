@@ -1,6 +1,6 @@
 # AWS DSC Toolkit
 
-The AWS DSC Toolkit is provided under this [license](http://azure.microsoft.com/en-us/support/legal/) and this [privacy agreement](http://go.microsoft.com/fwlink/p/?linkid=131004&amp;clcid=0x409).
+Use of the AWS DSC Toolkit is subject to this [license](http://azure.microsoft.com/en-us/support/legal/) and this [privacy agreement](http://go.microsoft.com/fwlink/p/?linkid=131004&amp;clcid=0x409).
 
 This module is currently in preview.  
 It is provided as is and is not supported through any Microsoft support program or service.
