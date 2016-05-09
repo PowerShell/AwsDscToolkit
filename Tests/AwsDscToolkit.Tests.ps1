@@ -19,6 +19,14 @@ if (-not (Test-Path variable:PSScriptRoot) -or -not $PSScriptRoot) {
     $PSScriptRoot = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
 }
 
+# Check for Azure login
+try {
+    AzureRM.Profile\Get-AzureRmContext | Out-Null
+}
+catch {
+    AzureRM.Profile\Add-AzureRmAccount | Out-Null
+}
+
 # Retrieves the Azure Automation resource group for an Azure Automation account
 function Get-AzureAutomationResourceGroup {
     param (

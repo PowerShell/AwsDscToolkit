@@ -273,7 +273,7 @@ function Get-AwsDscUserData {
         [string]
         $WmfVersion = 'latest',
 
-        [ValidateParameterSet('Enable', 'Disable', $null)]
+        [ValidateSet('Enable', 'Disable', $null)]
         [string]
         $DataCollection
     )
