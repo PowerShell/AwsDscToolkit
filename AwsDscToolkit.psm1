@@ -112,7 +112,7 @@ function ConvertTo-EncryptedProtectedSettingsString {
         $KeyId,
 
         [Parameter(Mandatory = $true)]
-		[string]
+        [string]
         $AccessKey,
 
         [Parameter(Mandatory = $true)]
@@ -149,25 +149,25 @@ function ConvertTo-EncryptedProtectedSettingsString {
 # Converts a hashtable of configuration arguments to a string for AWS user data
 function ConvertTo-ConfigArgStringFromHashtable {
     [OutputType([string])]
-	[CmdletBinding()]
-	param (
-		[Hashtable]
+    [CmdletBinding()]
+    param (
+        [Hashtable]
         $Hashtable
-	)
+    )
 
     if (-not $Hashtable) {
         return '@{}'
     }
 
     # Set up the beginning of the hashtable
-	$hashtableString = '@{'
+    $hashtableString = '@{'
 
     # Process the hashtable arguments
-	foreach ($key in $Hashtable.Keys) {
-		if ($Hashtable[$key].GetType() -ieq "".GetType()) {
+    foreach ($key in $Hashtable.Keys) {
+        if ($Hashtable[$key].GetType() -ieq "".GetType()) {
             # If the argument is a string, put single quotes around it
-			$hashtableString += "$key = '$($Hashtable[$key])';"
-		}
+            $hashtableString += "$key = '$($Hashtable[$key])';"
+        }
         elseif ($Hashtable[$key].GetType() -ieq @{}.GetType()) {
             # If the argument is a hashtable, recurse to convert that hashtable to a string as well
             $hashtableString += "$key = $(ConvertTo-ConfigArgStringFromHashtable $Hashtable[$key]);"
@@ -181,14 +181,14 @@ function ConvertTo-ConfigArgStringFromHashtable {
                 $hashtableString += "$key = 0;"
             }
         }
-		else {
+        else {
             # Otherwise, leave the argument as is
-			$hashtableString += "$key = $($Hashtable[$key]);"
-		}
-	}
+            $hashtableString += "$key = $($Hashtable[$key]);"
+        }
+    }
 
     # Set up the end of the hashtable
-	$hashtableString = $hashtableString.TrimEnd(';') + '}'
+    $hashtableString = $hashtableString.TrimEnd(';') + '}'
 
     return $hashtableString
 }
@@ -233,16 +233,16 @@ function Get-AwsDscUserData {
     [OutputType([string])]
     [CmdletBinding()]
     param (
-		[Parameter(Mandatory = $true)]
-		[string]
+        [Parameter(Mandatory = $true)]
+        [string]
         $ConfigurationUrl,
 
-		[Parameter(Mandatory = $true)]
-		[string]
+        [Parameter(Mandatory = $true)]
+        [string]
         $ConfigurationScript,
 
-		[Parameter(Mandatory = $true)]
-		[string]
+        [Parameter(Mandatory = $true)]
+        [string]
         $ConfigurationFunction,
 
         [Parameter(Mandatory = $true)]
@@ -261,13 +261,13 @@ function Get-AwsDscUserData {
         [string]
         $Region,
 
-		[Hashtable]
+        [Hashtable]
         $ConfigurationArguments,
 
-		[Hashtable]
+        [Hashtable]
         $ProtectedConfigurationArguments,
 
-		[string]
+        [string]
         $ExtensionVersion = '0.1.0.0',
 
         [string]
@@ -281,11 +281,11 @@ function Get-AwsDscUserData {
     Write-Verbose "$(Get-Date) Generating user data..."
 
     # AWS Bootstrapper download info
-	$extensionDownloadUrl = 'https://raw.githubusercontent.com/PowerShell/AWSBootStrapper/master/AWSDSCBootstrapper.ps1'
-	$extensionFileLocation = 'C:\AWSDSCBootstrapper.ps1'
+    $extensionDownloadUrl = 'https://raw.githubusercontent.com/PowerShell/AWSBootStrapper/master/AWSDSCBootstrapper.ps1'
+    $extensionFileLocation = 'C:\AWSDSCBootstrapper.ps1'
 
     # Convert public arguments to a string so that the AWS agent will process the command correctly
-	$configurationArgumentsString = ConvertTo-ConfigArgStringFromHashtable $ConfigurationArguments
+    $configurationArgumentsString = ConvertTo-ConfigArgStringFromHashtable $ConfigurationArguments
 
     # Configure and encrypt protected arguments
     $protectedSettingsContainer = @{ configurationArguments = $ProtectedConfigurationArguments }
@@ -363,7 +363,7 @@ function Invoke-UserDataOnEC2Instance {
         [string]
         $InstanceId,
 
-		[Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true)]
         [string]
         $UserData,
 
@@ -779,13 +779,13 @@ function Set-IAMInstanceProfileForRegistration {
     .PARAMETER NodeConfigurationName
     The DSC configuration already uploaded to your Azure Automation account that should be applied to this instance.
 
-	.PARAMETER ConfigurationMode
+    .PARAMETER ConfigurationMode
     The DSC configuration mode to apply to this instance. The default is 'ApplyAndMonitor'.
 
-	.PARAMETER ConfigurationModeFrequencyMins
+    .PARAMETER ConfigurationModeFrequencyMins
     The frequency in minutes of how often to update the DSC configuration mode for this instance. The default is 15 minutes.
 
-	.PARAMETER RefreshFrequencyMins
+    .PARAMETER RefreshFrequencyMins
     The frequency in minutes of how often to update the DSC configuration for this instance. The default is 30 minutes.
     
     .PARAMETER RebootNodeIfNeeded
@@ -794,7 +794,7 @@ function Set-IAMInstanceProfileForRegistration {
     .PARAMETER AllowModuleOverwrite
     A boolean indicating to DSC whether or not overwriting modules is allowed. The default is false.
 
-	.PARAMETER ActionAfterReboot
+    .PARAMETER ActionAfterReboot
     The action that DSC should take after a reboot. This will only be effective after registration is complete. The default is 'ContinueConfiguration'.
 
     .PARAMETER DscBootstrapperVersion
@@ -973,16 +973,16 @@ function Register-EC2Instance {
         $AzureAutomationResourceGroup,
 
         #--- Azure Automation registration configuration parameters ---
-	    [string]
+        [string]
         $NodeConfigurationName = '',
 
-	    [string]
+        [string]
         $ConfigurationMode = 'ApplyAndMonitor',
 
-	    [int]
+        [int]
         $ConfigurationModeFrequencyMins = 15,
 
-	    [int]
+        [int]
         $RefreshFrequencyMins = 30,
 
         [boolean]
@@ -991,7 +991,7 @@ function Register-EC2Instance {
         [boolean]
         $AllowModuleOverwrite = $false,
 
-	    [string]
+        [string]
         $ActionAfterReboot = 'ContinueConfiguration',
         
         #--- DSC bootstrapper info parameters ---
@@ -1233,7 +1233,7 @@ function Register-EC2Instance {
         }
 
         Write-Verbose "$(Get-Date) Creating Azure Automation registration encoded user data..."
-	    $userData = Get-AwsDscUserData `
+        $userData = Get-AwsDscUserData `
             -ConfigurationUrl $azureAutomationConfigurationUrl `
             -ConfigurationScript $azureAutomationConfigurationScript `
             -ConfigurationFunction $azureAutomationConfigurationFunction `
@@ -1275,8 +1275,8 @@ function Register-EC2Instance {
             $PSBoundParameters.Remove('AzureAutomationResourceGroup') | Out-Null
             $PSBoundParameters.Remove('AzureAutomationAccount') | Out-Null
             $PSBoundParameters.Remove('NodeConfigurationName') | Out-Null
-	        $PSBoundParameters.Remove('ConfigurationMode') | Out-Null
-	        $PSBoundParameters.Remove('ConfigurationModeFrequencyMins') | Out-Null
+            $PSBoundParameters.Remove('ConfigurationMode') | Out-Null
+            $PSBoundParameters.Remove('ConfigurationModeFrequencyMins') | Out-Null
             $PSBoundParameters.Remove('RefreshFrequencyMins') | Out-Null
             $PSBoundParameters.Remove('RebootNodeIfNeeded') | Out-Null
             $PSBoundParameters.Remove('AllowModuleOverwrite') | Out-Null
