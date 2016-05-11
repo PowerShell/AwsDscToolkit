@@ -807,8 +807,7 @@ function Set-IAMInstanceProfileForRegistration {
     The AWS encryption key id to use to encrypt the Azure Automation registration key.
 
     .PARAMETER DataCollection
-    A boolean indicating whether to enable or disable telemetry sent to Microsoft. The only possible values are 'Enable' and 'Disable'.
-    All telemetry is currently disabled whether this parameter is specified as 'Enable' or not.
+    Indicates whether to enable or disable telemetry sent to Microsoft. The only possible values are 'Enable' and 'Disable'.
 
     .PARAMETER AwsRegion
     The AWS region in which to run all AWS commands. You can also use Set-DefaultAWSRegion to set the default region for your session.
