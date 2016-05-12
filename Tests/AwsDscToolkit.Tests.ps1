@@ -27,6 +27,15 @@ catch {
     AzureRM.Profile\Add-AzureRmAccount | Out-Null
 }
 
+function Write-VerboseWithDate {
+    [CmdletBinding()]
+    param (
+        [string]$Message
+    )
+
+    Write-Verbose "$(Get-Date) $Message"
+}
+
 # Retrieves the Azure Automation resource group for an Azure Automation account
 function Get-AzureAutomationResourceGroup {
     param (
@@ -55,7 +64,7 @@ function Get-AzureAutomationResourceGroup {
 
 # If an Azure Automation resource group was not provided, find the resource group for the given account
 if (-not $AzureAutomationResourceGroup) {
-    Write-Verbose "$(Get-Date) Retrieving Azure Automation resource group for account $AzureAutomationAccount..."
+    Write-VerboseWithDate "Retrieving Azure Automation resource group for account $AzureAutomationAccount..."
     $AzureAutomationResourceGroup = Get-AzureAutomationResourceGroup -AzureAutomationAccountName $AzureAutomationAccount
 }
 
@@ -296,29 +305,29 @@ function New-IAMInstanceProfileForRegistrationInline {
     }
         
     # Create a new custom instance profile
-    Write-Verbose "Creating new IAM instance profile..."
+    Write-VerboseWithDate "Creating new IAM instance profile..."
     $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "Creating new IAM role..."
+    Write-VerboseWithDate "Creating new IAM role..."
     $role = New-IAMRole -RoleName $RoleName -AssumeRolePolicyDocument $roleTrustPolicyDocument -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "Adding IAM role to IAM instance profile..." 
+    Write-VerboseWithDate "Adding IAM role to IAM instance profile..." 
     Add-IAMRoleToInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
 
-    Write-Verbose "Writing IAM role policy..." 
+    Write-VerboseWithDate "Writing IAM role policy..." 
     if ($PSCmdlet.ShouldProcess($role.RoleName)) {
         AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
     }
 
-    Write-Verbose "Waiting for 10 seconds while permissions propogate..."
+    Write-VerboseWithDate "Waiting for 10 seconds while permissions propogate..."
     Start-Sleep -Seconds 10
 
-    Write-Verbose "Retrieving current IAM instance profile..." 
+    Write-VerboseWithDate "Retrieving current IAM instance profile..." 
     $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     $role = Get-IAMRole -RoleName $RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
     while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | Where-Object { $_.Arn -eq $role.Arn })) {
-        Write-Verbose "IAM instance profile needs more time. Waiting 5 seconds..."
+        Write-VerboseWithDate "IAM instance profile needs more time. Waiting 5 seconds..."
         Start-Sleep -Seconds 5
         $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
@@ -336,19 +345,19 @@ function Get-EC2InstanceAzureAutomationId {
 
     $instanceReservation = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "$(Get-Date) Checking for instance registration..."
+    Write-VerboseWithDate "Checking for instance registration..."
 
     # Check if the instance's IP address matches an IP address in the Azure Automation account's DSC nodes
-    Write-Verbose "$(Get-Date) Retrieving AWS VM IP address..." 
+    Write-VerboseWithDate "Retrieving AWS VM IP address..." 
     $vmIpAddress = $instanceReservation.Instances[0].PrivateIpAddress
 
-    Write-Verbose "$(Get-Date) Retrieving Azure Automation DSC nodes..."
+    Write-VerboseWithDate "Retrieving Azure Automation DSC nodes..."
     $dscNodes = AzureRM.Automation\Get-AzureRmAutomationDscNode -ResourceGroupName $AzureAutomationResourceGroup -AutomationAccountName $AzureAutomationAccount
     
-    Write-Verbose "$(Get-Date) Checking instance IP address against DSC nodes..."
+    Write-VerboseWithDate "Checking instance IP address against DSC nodes..."
     foreach ($dscNode in $dscNodes) {
         if ($dscNode.IpAddress.Split(';')[0] -eq $vmIpAddress) {
-            Write-Verbose "$(Get-Date) Instance is registered."
+            Write-VerboseWithDate "Instance is registered."
             return $dscNode.Id
         }
     }
@@ -375,12 +384,12 @@ function Invoke-WaitForEC2InstanceState {
 
     # Wait until the instance is in the desired state
     while ($instance.RunningInstance.State.Name -ne $DesiredState) {
-        Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
+        Write-VerboseWithDate "Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
         Start-Sleep -Seconds 10
         $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     }
 
-    Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name)."
+    Write-VerboseWithDate "Instance state is $($instance.RunningInstance.State.Name)."
 }
 
 function Invoke-WaitForEC2InstanceStatus {
@@ -396,12 +405,12 @@ function Invoke-WaitForEC2InstanceStatus {
 
     # Wait until the instance has the desired status
     while ($instanceStatus.Status.Status.Value -ne $DesiredStatus) {
-        Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value). Waiting for 30 seconds..."
+        Write-VerboseWithDate "Instance status is $($instanceStatus.Status.Status.Value). Waiting for 30 seconds..."
         Start-Sleep -Seconds 30
         $instanceStatus = AWSPowershell\Get-EC2InstanceStatus $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
 
-    Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value)."
+    Write-VerboseWithDate "Instance status is $($instanceStatus.Status.Status.Value)."
 }
 
 function Invoke-WaitForEC2InstanceRegistered {
@@ -416,7 +425,7 @@ function Invoke-WaitForEC2InstanceRegistered {
     $runningTime = (Get-Date) - (Get-Date)
 
     while ($status -ne [EC2InstanceRegistrationStatus]::Registered -and $runningTime.Minutes -lt $TimeoutMins) {
-        Write-Verbose "$(Get-Date) Registration not found. Waiting 30 seconds..."
+        Write-VerboseWithDate "Registration not found. Waiting 30 seconds..."
         Start-Sleep -Seconds 30
             
         $status = Test-EC2InstanceRegistration `
