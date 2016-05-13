@@ -11,6 +11,8 @@ param (
     [string]$ExtensionVersion = '0.1.0.0'
 )
 
+$Verbose = [bool]$PSBoundParameters['Verbose']
+
 $ErrorActionPreference = 'stop'
 Set-StrictMode -Version latest
 
@@ -757,7 +759,7 @@ try {
             }
         }
         finally {
-            Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile -Verbose
+            Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
         }
 
         It 'Should return ReadyToRegister for instance with inline role policy' {
@@ -819,12 +821,12 @@ try {
         }
 
         It 'Should throw an error when both instance id and new flag specified' {
-            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -InstanceId $invalidInstanceId -New -Verbose} `
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -InstanceId $invalidInstanceId -New} `
             | Should Throw 'Cannot register an existing instance and a new instance at the same time.'
         }
 
         It 'Should throw an error when neither instance id nor new flag specified' {
-            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -Verbose} `
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup} `
             | Should Throw 'Either the new flag or an existing instance id must be specified.'
         }
 
@@ -857,10 +859,10 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose:$Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose:$Verbose
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose:$Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
@@ -901,8 +903,8 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose:$Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose:$Verbose
 
                         $instanceReservation = Register-EC2Instance `
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
@@ -913,7 +915,7 @@ try {
                             -AwsSecretKey $AwsSecretKey `
                             -AwsRegion $AwsRegion
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose:$Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
@@ -946,8 +948,8 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose:$Verbose
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose:$Verbose
 
                         Register-EC2Instance `
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
@@ -965,7 +967,7 @@ try {
                             -AwsRegion $AwsRegion `
                         | Should Be ([EC2InstanceRegistrationStatus]::ReadyToRegister)
 
-                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose
+                        $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId -Verbose:$Verbose
         
                         $status | Should Be ([EC2InstanceRegistrationStatus]::Registered)
 
