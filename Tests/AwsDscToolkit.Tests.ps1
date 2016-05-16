@@ -7,9 +7,8 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$AzureAutomationAccount,
     [string]$AzureAutomationResourceGroup,
-    [Parameter(Mandatory = $true)]
-    [string]$KeyPair,
-    [string]$AwsRegion = 'us-west-2'
+    [string]$AwsRegion = 'us-west-2',
+    [string]$ExtensionVersion = '0.1.0.0'
 )
 
 $ErrorActionPreference = 'stop'
@@ -18,6 +17,23 @@ Set-StrictMode -Version latest
 # $PSScriptRoot is not defined in 2.0
 if (-not (Test-Path variable:PSScriptRoot) -or -not $PSScriptRoot) { 
     $PSScriptRoot = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
+}
+
+# Check for Azure login
+try {
+    AzureRM.Profile\Get-AzureRmContext | Out-Null
+}
+catch {
+    AzureRM.Profile\Add-AzureRmAccount | Out-Null
+}
+
+function Write-VerboseWithDate {
+    [CmdletBinding()]
+    param (
+        [string]$Message
+    )
+
+    Write-Verbose "$(Get-Date) $Message"
 }
 
 # Retrieves the Azure Automation resource group for an Azure Automation account
@@ -48,7 +64,7 @@ function Get-AzureAutomationResourceGroup {
 
 # If an Azure Automation resource group was not provided, find the resource group for the given account
 if (-not $AzureAutomationResourceGroup) {
-    Write-Verbose "$(Get-Date) Retrieving Azure Automation resource group for account $AzureAutomationAccount..."
+    Write-VerboseWithDate "Retrieving Azure Automation resource group for account $AzureAutomationAccount..."
     $AzureAutomationResourceGroup = Get-AzureAutomationResourceGroup -AzureAutomationAccountName $AzureAutomationAccount
 }
 
@@ -289,29 +305,29 @@ function New-IAMInstanceProfileForRegistrationInline {
     }
         
     # Create a new custom instance profile
-    Write-Verbose "Creating new IAM instance profile..."
+    Write-VerboseWithDate "Creating new IAM instance profile..."
     $instanceProfile = New-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "Creating new IAM role..."
+    Write-VerboseWithDate "Creating new IAM role..."
     $role = New-IAMRole -RoleName $RoleName -AssumeRolePolicyDocument $roleTrustPolicyDocument -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "Adding IAM role to IAM instance profile..." 
+    Write-VerboseWithDate "Adding IAM role to IAM instance profile..." 
     Add-IAMRoleToInstanceProfile -InstanceProfileName $instanceProfile.InstanceProfileName -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
 
-    Write-Verbose "Writing IAM role policy..." 
+    Write-VerboseWithDate "Writing IAM role policy..." 
     if ($PSCmdlet.ShouldProcess($role.RoleName)) {
         AWSPowershell\Write-IAMRolePolicy -PolicyDocument $rolePolicyDocument -PolicyName 'AllowRunCommand' -RoleName $role.RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion | Out-Null
     }
 
-    Write-Verbose "Waiting for 10 seconds while permissions propogate..."
+    Write-VerboseWithDate "Waiting for 10 seconds while permissions propogate..."
     Start-Sleep -Seconds 10
 
-    Write-Verbose "Retrieving current IAM instance profile..." 
+    Write-VerboseWithDate "Retrieving current IAM instance profile..." 
     $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     $role = Get-IAMRole -RoleName $RoleName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
     while (-not $instanceProfile -or -not $instanceProfile.Roles -or -not ($instanceProfile.Roles | Where-Object { $_.Arn -eq $role.Arn })) {
-        Write-Verbose "IAM instance profile needs more time. Waiting 5 seconds..."
+        Write-VerboseWithDate "IAM instance profile needs more time. Waiting 5 seconds..."
         Start-Sleep -Seconds 5
         $instanceProfile = Get-IAMInstanceProfile -InstanceProfileName $InstanceProfileName -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
@@ -329,19 +345,19 @@ function Get-EC2InstanceAzureAutomationId {
 
     $instanceReservation = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
 
-    Write-Verbose "$(Get-Date) Checking for instance registration..."
+    Write-VerboseWithDate "Checking for instance registration..."
 
     # Check if the instance's IP address matches an IP address in the Azure Automation account's DSC nodes
-    Write-Verbose "$(Get-Date) Retrieving AWS VM IP address..." 
+    Write-VerboseWithDate "Retrieving AWS VM IP address..." 
     $vmIpAddress = $instanceReservation.Instances[0].PrivateIpAddress
 
-    Write-Verbose "$(Get-Date) Retrieving Azure Automation DSC nodes..."
+    Write-VerboseWithDate "Retrieving Azure Automation DSC nodes..."
     $dscNodes = AzureRM.Automation\Get-AzureRmAutomationDscNode -ResourceGroupName $AzureAutomationResourceGroup -AutomationAccountName $AzureAutomationAccount
     
-    Write-Verbose "$(Get-Date) Checking instance IP address against DSC nodes..."
+    Write-VerboseWithDate "Checking instance IP address against DSC nodes..."
     foreach ($dscNode in $dscNodes) {
         if ($dscNode.IpAddress.Split(';')[0] -eq $vmIpAddress) {
-            Write-Verbose "$(Get-Date) Instance is registered."
+            Write-VerboseWithDate "Instance is registered."
             return $dscNode.Id
         }
     }
@@ -368,10 +384,12 @@ function Invoke-WaitForEC2InstanceState {
 
     # Wait until the instance is in the desired state
     while ($instance.RunningInstance.State.Name -ne $DesiredState) {
-        Write-Verbose "$(Get-Date) Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
+        Write-VerboseWithDate "Instance state is $($instance.RunningInstance.State.Name). Waiting for 10 seconds..."
         Start-Sleep -Seconds 10
         $instance = AWSPowershell\Get-EC2Instance $InstanceId -AccessKey $AccessKey -SecretKey $SecretKey -Region $Region
     }
+
+    Write-VerboseWithDate "Instance state is $($instance.RunningInstance.State.Name)."
 }
 
 function Invoke-WaitForEC2InstanceStatus {
@@ -387,10 +405,12 @@ function Invoke-WaitForEC2InstanceStatus {
 
     # Wait until the instance has the desired status
     while ($instanceStatus.Status.Status.Value -ne $DesiredStatus) {
-        Write-Verbose "$(Get-Date) Instance status is $($instanceStatus.Status.Status.Value). Waiting for 10 seconds..."
-        Start-Sleep -Seconds 10
+        Write-VerboseWithDate "Instance status is $($instanceStatus.Status.Status.Value). Waiting for 30 seconds..."
+        Start-Sleep -Seconds 30
         $instanceStatus = AWSPowershell\Get-EC2InstanceStatus $InstanceId -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
     }
+
+    Write-VerboseWithDate "Instance status is $($instanceStatus.Status.Status.Value)."
 }
 
 function Invoke-WaitForEC2InstanceRegistered {
@@ -405,8 +425,8 @@ function Invoke-WaitForEC2InstanceRegistered {
     $runningTime = (Get-Date) - (Get-Date)
 
     while ($status -ne [EC2InstanceRegistrationStatus]::Registered -and $runningTime.Minutes -lt $TimeoutMins) {
-        Write-Verbose "$(Get-Date) Registration not found. Waiting 10 seconds..."
-        Start-Sleep -Seconds 10
+        Write-VerboseWithDate "Registration not found. Waiting 30 seconds..."
+        Start-Sleep -Seconds 30
             
         $status = Test-EC2InstanceRegistration `
             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
@@ -602,7 +622,6 @@ try {
         It 'Should return CannotRegister when instance does not have an IAM role' {
             $instanceReservation = New-EC2Instance `
                 -ImageId $imageId `
-                -KeyName $KeyPair `
                 -SecurityGroup $testSecurityGroupName `
                 -InstanceType $instanceType `
                 -AccessKey $AwsAccessKey `
@@ -654,7 +673,6 @@ try {
             It 'Should return NotReadyToRegister when instance role does not have access to an encryption key' {
                 $instanceReservation = New-EC2Instance `
                     -ImageId $imageId `
-                    -KeyName $KeyPair `
                     -SecurityGroup $testSecurityGroupName `
                     -InstanceType $instanceType `
                     -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -686,7 +704,6 @@ try {
                 It 'Should return NotReadyToRegister when instance does not have the correct IAM role permissions to use Run Command' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -717,7 +734,6 @@ try {
                 It 'Should return ReadyToRegister for instance with AWS managed role policy' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -741,7 +757,7 @@ try {
             }
         }
         finally {
-            Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile -Verbose
+            Remove-IAMInstanceProfileAndRole -InstanceProfile $instanceProfile
         }
 
         It 'Should return ReadyToRegister for instance with inline role policy' {
@@ -753,7 +769,6 @@ try {
                 try {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $inlineInstanceProfile.InstanceProfileName `
@@ -804,12 +819,12 @@ try {
         }
 
         It 'Should throw an error when both instance id and new flag specified' {
-            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -InstanceId $invalidInstanceId -New -Verbose} `
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -InstanceId $invalidInstanceId -New} `
             | Should Throw 'Cannot register an existing instance and a new instance at the same time.'
         }
 
         It 'Should throw an error when neither instance id nor new flag specified' {
-            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup -Verbose} `
+            {Register-EC2Instance -AzureAutomationAccount $AzureAutomationAccount -AzureAutomationResourceGroup $AzureAutomationResourceGroup} `
             | Should Throw 'Either the new flag or an existing instance id must be specified.'
         }
 
@@ -831,10 +846,10 @@ try {
                         -AzureAutomationAccount $AzureAutomationAccount `
                         -New `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
+                        -DscBootstrapperVersion $ExtensionVersion `
                         -AwsAccessKey $AwsAccessKey `
                         -AwsSecretKey $AwsSecretKey `
                         -AwsRegion $AwsRegion
@@ -842,8 +857,8 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok'
 
                         $status = Invoke-WaitForEC2InstanceRegistered -InstanceId $instanceId
         
@@ -876,7 +891,6 @@ try {
                 It 'Should register an existing instance' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -887,13 +901,14 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok'
 
                         $instanceReservation = Register-EC2Instance `
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
                             -AzureAutomationAccount $AzureAutomationAccount `
                             -InstanceId $instanceId `
+                            -DscBootstrapperVersion $ExtensionVersion `
                             -AwsAccessKey $AwsAccessKey `
                             -AwsSecretKey $AwsSecretKey `
                             -AwsRegion $AwsRegion
@@ -921,7 +936,6 @@ try {
                 It 'Should be able to pipe between Register-EC2Instance and Test-EC2InstanceRegistration' {
                     $instanceReservation = New-EC2Instance `
                         -ImageId $imageId `
-                        -KeyName $KeyPair `
                         -SecurityGroup $testSecurityGroupName `
                         -InstanceType $instanceType `
                         -InstanceProfile_Name $instanceProfile.InstanceProfileName `
@@ -932,13 +946,14 @@ try {
                     $instanceId = $instanceReservation.Instances[0].InstanceId
 
                     try {
-                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion -Verbose
-                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok' -Verbose
+                        Invoke-WaitForEC2InstanceState -InstanceId $instanceId -DesiredState 'running' -AccessKey $AwsAccessKey -SecretKey $AwsSecretKey -Region $AwsRegion
+                        Invoke-WaitForEC2InstanceStatus -InstanceId $instanceId -DesiredStatus 'ok'
 
                         Register-EC2Instance `
                             -AzureAutomationResourceGroup $AzureAutomationResourceGroup `
                             -AzureAutomationAccount $AzureAutomationAccount `
                             -InstanceId $instanceId `
+                            -DscBootstrapperVersion $ExtensionVersion `
                             -AwsAccessKey $AwsAccessKey `
                             -AwsSecretKey $AwsSecretKey `
                             -AwsRegion $AwsRegion `

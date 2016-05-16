@@ -1,5 +1,7 @@
 # AWS DSC Toolkit
 
+Use of the AWS DSC Toolkit is subject to this [privacy agreement](http://go.microsoft.com/fwlink/p/?linkid=131004&amp;clcid=0x409).
+
 This module is currently in preview.  
 It is provided as is and is not supported through any Microsoft support program or service.
 
@@ -9,14 +11,20 @@ You can then control your EC2 instances in Azure Automation using PowerShell DSC
 
 ## Releases
 
+### Unreleased
+- Refined depedency on AzureRM module. Module manifest now only specifies AzureRM.Automation and AzureRM.Profile as required modules.
+- Removed KeyPair parameter from tests.
+- Added ExtensionVersion parameter to tests.
+- Added DataCollection parameter to Register-EC2Instance. This new parameter allows you to opt-out from Microsoft telemetry collection.
+
 ### 0.3.0.0
-- Fixed variable typo for AWS credential and region in Set-IAMInstanceProfileForRegistration
+- Fixed variable typo for AWS credential and region in Set-IAMInstanceProfileForRegistration.
 
 ### 0.2.0.0
 - Modified encryption key selection. Register-EC2Instance will now select the first key that the provided instance profile has access to rather than just the first key available.
 
 ### 0.1.0.0
-- Initial release
+- Initial release.
 
 ## Installation
 The AWS DSC Toolkit is available on the [PowerShell Gallery](https://www.powershellgallery.com/packages/AwsDscToolkit).  
