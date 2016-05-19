@@ -13,6 +13,9 @@ You can then control your EC2 instances in Azure Automation using PowerShell DSC
 
 ### Unreleased
 
+### 0.5.0.0
+- Fixed messed up module manifest
+
 ### 0.4.0.0
 - Refined depedency on AzureRM module. Module manifest now only specifies AzureRM.Automation and AzureRM.Profile as required modules.
 - Removed KeyPair parameter from tests.
