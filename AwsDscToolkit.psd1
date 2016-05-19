@@ -12,7 +12,7 @@
 RootModule = 'AwsDscToolkit.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.4.0.0'
+ModuleVersion = '0.5.0.0'
 
 # ID used to uniquely identify this module
 GUID = '88d6ea7a-51d0-4f42-9ff2-c9bd2721f2bf'
