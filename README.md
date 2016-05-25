@@ -12,6 +12,7 @@ You can then control your EC2 instances in Azure Automation using PowerShell DSC
 ## Releases
 
 ### Unreleased
+- Increased test timeout
 
 ### 0.5.0.0
 - Fixed messed up module manifest
