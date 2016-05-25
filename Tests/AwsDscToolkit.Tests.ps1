@@ -417,7 +417,7 @@ function Invoke-WaitForEC2InstanceRegistered {
      param (
         [Parameter(Mandatory = $true)]
         [string]$InstanceId,
-        [int]$TimeoutMins = 10
+        [int]$TimeoutMins = 15
     )
 
     $status = [EC2InstanceRegistrationStatus]::ReadyToRegister
