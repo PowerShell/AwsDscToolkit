@@ -5,6 +5,9 @@ Use of the AWS DSC Toolkit is subject to this [privacy agreement](http://go.micr
 This module is currently in preview.  
 It is provided as is and is not supported through any Microsoft support program or service.
 
+This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
 ## Description
 This module allows you to register AWS EC2 instances as DSC Nodes in Azure Automation.
 You can then control your EC2 instances in Azure Automation using PowerShell DSC configurations.
