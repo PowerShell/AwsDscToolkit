@@ -66,6 +66,20 @@ To register a new instance to Azure Automation, use the Register-EC2Instance cmd
 ```powershell
 Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroup 'MySecurityGroup'
 ```
+You can also pass in additional EC2 parameters, for more imformation on these parameters see the [EC2 documentation](http://docs.aws.amazon.com/powershell/latest/reference/index.html?page=New-EC2Instance.html&tocid=New-EC2Instance)
+
+For example to pass in a specific subnet and security group:
+```powershell
+Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'My-SubnetID'
+```
+### Note: you if you want to pass in SecurityGroup, you can only pass in SecurityGroupId if used in conjunction with SubnetID
+
+You can also provide as exisiting SecurityKey
+
+For example to pass in a specific subnet and security group:
+```powershell
+Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'MySubnet-ID' -KeyName 'MyKeyName'
+```
 
 When the New flag is set, this cmdlet acts as a proxy for the AWS cmdlet New-EC2Instance. All parameters of New-EC2Instance are included in Register-EC2Instance -New except for those pertaining to user data (UserData, UserDataFile).
 
