@@ -72,9 +72,9 @@ For example to pass in a specific subnet and security group:
 ```powershell
 Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'My-SubnetID'
 ```
-### Note: you if you want to pass in SecurityGroup, you can only pass in SecurityGroupId if used in conjunction with SubnetID
+*Note:* If you want to pass in a SecurityGroup, you can only pass in the SecurityGroupId if used in conjunction with SubnetID.
 
-You can also provide as exisiting SecurityKey
+You can also provide as exisiting SecurityKey:
 
 For example to pass in a specific subnet and security group:
 ```powershell
