@@ -70,9 +70,9 @@ You can also pass in additional EC2 parameters, for more imformation on these pa
 
 For example to pass in a specific subnet and security group:
 ```powershell
-Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'My-SubnetID'
+Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'MySubnet-ID'
 ```
-*Note:* If you want to pass in a SecurityGroup, you can only pass in the SecurityGroupId if used in conjunction with SubnetID.
+**Note:** If you want to pass in a SecurityGroup, you can only pass in the SecurityGroupId if used in conjunction with SubnetID.
 
 You can also provide as exisiting SecurityKey:
 
