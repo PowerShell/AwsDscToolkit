@@ -76,7 +76,6 @@ Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -Instanc
 
 You can also provide as exisiting SecurityKey:
 
-For example to pass in a specific subnet and security group:
 ```powershell
 Register-EC2Instance -AzureAutomationAccount 'MyAutomationAccount' -New -InstanceProfile_Name 'MyInstanceProfileName' -SecurityGroupId 'MySecurityGroup-Id' -SubnetId 'MySubnet-ID' -KeyName 'MyKeyName'
 ```
